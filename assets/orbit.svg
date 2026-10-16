@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 320" width="640" height="320" role="img" aria-label="Orbite ZipGuard autour des profils">
+	<defs>
+		<linearGradient id="og" x1="0" y1="0" x2="1" y2="1">
+			<stop offset="0" stop-color="#7F7FD5"/>
+			<stop offset="0.55" stop-color="#86A8E7"/>
+			<stop offset="1" stop-color="#91EAE4"/>
+		</linearGradient>
+		<radialGradient id="core" cx="0.5" cy="0.4" r="0.7">
+			<stop offset="0" stop-color="#9fb8ff"/>
+			<stop offset="1" stop-color="#5566c4"/>
+		</radialGradient>
+	</defs>
+
+	<ellipse cx="320" cy="160" rx="150" ry="110" fill="none" stroke="#86A8E7" stroke-opacity="0.35"
+		stroke-width="2" stroke-dasharray="4 8">
+		<animate attributeName="stroke-dashoffset" values="0;-120" dur="5s" repeatCount="indefinite"/>
+	</ellipse>
+	<ellipse cx="320" cy="160" rx="110" ry="150" fill="none" stroke="#91EAE4" stroke-opacity="0.25"
+		stroke-width="2" stroke-dasharray="3 10">
+		<animate attributeName="stroke-dashoffset" values="0;130" dur="7s" repeatCount="indefinite"/>
+	</ellipse>
+
+	<circle cx="320" cy="160" r="46" fill="url(#core)"/>
+	<circle cx="320" cy="160" r="46" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="2">
+		<animate attributeName="r" values="46;52;46" dur="2.4s" repeatCount="indefinite"/>
+		<animate attributeName="stroke-opacity" values="0.6;0.1;0.6" dur="2.4s" repeatCount="indefinite"/>
+	</circle>
+	<text x="320" y="168" text-anchor="middle" font-family="Fira Code, monospace" font-size="26"
+		font-weight="700" fill="#ffffff">ZG</text>
+
+	<g>
+		<animateTransform attributeName="transform" type="rotate" values="0 320 160;360 320 160"
+			dur="14s" repeatCount="indefinite"/>
+
+		<g transform="translate(320,30)">
+			<g>
+				<animateTransform attributeName="transform" type="rotate" values="360;0"
+					dur="14s" repeatCount="indefinite"/>
+				<circle r="34" fill="url(#og)"/>
+				<circle r="34" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="2"/>
+				<text y="-2" text-anchor="middle" font-family="Fira Code, monospace" font-size="20"
+					font-weight="700" fill="#ffffff">EP</text>
+				<text y="14" text-anchor="middle" font-family="Fira Code, monospace" font-size="8.5"
+					fill="#ffffff">@Picsou06</text>
+			</g>
+		</g>
+
+		<g transform="translate(320,290)">
+			<g>
+				<animateTransform attributeName="transform" type="rotate" values="360;0"
+					dur="14s" repeatCount="indefinite"/>
+				<circle r="34" fill="url(#og)"/>
+				<circle r="34" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="2"/>
+				<text y="-2" text-anchor="middle" font-family="Fira Code, monospace" font-size="20"
+					font-weight="700" fill="#ffffff">HK</text>
+				<text y="14" text-anchor="middle" font-family="Fira Code, monospace" font-size="7.5"
+					fill="#ffffff">@CodeByHaamza</text>
+			</g>
+		</g>
+	</g>
+
+	<g font-family="Fira Code, monospace" font-size="11" fill="#86A8E7">
+		<circle cx="470" cy="160" r="3" fill="#91EAE4">
+			<animate attributeName="opacity" values="0.2;1;0.2" dur="1.6s" repeatCount="indefinite"/>
+		</circle>
+		<circle cx="170" cy="160" r="3" fill="#7F7FD5">
+			<animate attributeName="opacity" values="1;0.2;1" dur="1.6s" repeatCount="indefinite"/>
+		</circle>
+	</g>
+</svg>

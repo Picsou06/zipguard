@@ -9,11 +9,9 @@
 ![License](https://img.shields.io/badge/license-MIT-91EAE4?style=for-the-badge)
 ![Python](https://img.shields.io/badge/python-3.10%2B-86A8E7?style=for-the-badge&logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-ready-7F7FD5?style=for-the-badge&logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-pytest-91EAE4?style=for-the-badge&logo=pytest&logoColor=white)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Picsou06/zipguard/ci.yml?style=for-the-badge&label=CI&logo=githubactions&logoColor=white)](https://github.com/Picsou06/zipguard/actions)
 ![Stars](https://img.shields.io/github/stars/Picsou06/zipguard?style=for-the-badge&color=86A8E7&logo=github)
-![Issues](https://img.shields.io/github/issues/Picsou06/zipguard?style=for-the-badge&color=7F7FD5&logo=github)
 ![Last commit](https://img.shields.io/github/last-commit/Picsou06/zipguard?style=for-the-badge&color=91EAE4&logo=git&logoColor=white)
 
 <br/><br/>
@@ -24,13 +22,26 @@
 
 <img src="assets/shield.svg" width="620" alt="Emblème ZipGuard animé" />
 
-<br/>
-
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=500&size=16&duration=2400&pause=500&color=91EAE4&center=true&vCenter=true&width=760&lines=scan+%E2%9E%9C+mesurer+le+ratio+avant+d%27ouvrir;demo+%E2%9E%9C+illustrer+la+compression%2C+born%C3%A9e+%C3%A0+100+Mo;six+garde+fous+%E2%9E%9C+z%C3%A9ro+surprise+%C3%A0+la+d%C3%A9compression" alt="typing-features" />
-
 </div>
 
 <img src="assets/divider.svg" width="100%" alt="" />
+
+## 🎬 Le scan en direct
+
+Le mécanisme, joué en boucle : une archive minuscule qui prétend peser des gigaoctets, et
+ZipGuard qui la refuse **avant** d'écrire le moindre octet.
+
+<div align="center">
+
+<img src="assets/ascii-art.svg" width="660" alt="Animation ASCII du fonctionnement" />
+
+<br/><br/>
+
+<img src="assets/simulation.svg" width="760" alt="Simulation d'un scan" />
+
+</div>
+
+---
 
 ## ✨ C'est quoi ?
 
@@ -56,7 +67,7 @@ défense, et un cours. Tout ce qui pourrait servir d'arme en est volontairement 
 > [`docs/pdf/ZipGuard-Documentation.pdf`](docs/pdf/ZipGuard-Documentation.pdf)
 > — régénérable avec `./scripts/build-pdf.sh` (pandoc + Chrome).
 
-<img src="assets/divider.svg" width="100%" alt="" />
+---
 
 ## 🚀 Prise en main
 
@@ -97,8 +108,6 @@ Archive **plafonnée à 100 Mo**, non imbriquée, qui se décompresse exactement
 annoncée. Elle montre la puissance de la compression des données répétitives sans jamais
 pouvoir servir d'arme.
 
-<img src="assets/divider.svg" width="100%" alt="" />
-
 ## 🐳 Docker
 
 ```bash
@@ -128,36 +137,47 @@ docker compose -f compose.prod.yaml build
 
 Détails et justifications dans [docs/02-prevention.md](docs/02-prevention.md).
 
-<img src="assets/divider.svg" width="100%" alt="" />
+---
 
 ## 👥 L'équipe
 
 <div align="center">
 
+<img src="assets/orbit.svg" width="560" alt="Les deux profils en orbite autour de ZipGuard" />
+
+<br/>
+
 <table>
 <tr>
 <td align="center" width="50%">
 <a href="https://github.com/Picsou06">
-<img src="https://github.com/Picsou06.png" width="120" style="border-radius:50%" alt="Evan" /><br/>
-<b>Evan</b>
+<img src="https://github.com/Picsou06.png" width="110" style="border-radius:50%" alt="Evan" /><br/>
+<b>Evan</b> · <code>@Picsou06</code>
 </a><br/>
-<sub><code>@Picsou06</code></sub><br/>
 <sub>Architecture & moteur de mesure</sub>
 </td>
 <td align="center" width="50%">
 <a href="https://github.com/CodeByHaamza">
-<img src="https://github.com/CodeByHaamza.png" width="120" style="border-radius:50%" alt="Hamza" /><br/>
-<b>Hamza Karrouchi</b>
+<img src="https://github.com/CodeByHaamza.png" width="110" style="border-radius:50%" alt="Hamza" /><br/>
+<b>Hamza Karrouchi</b> · <code>@CodeByHaamza</code>
 </a><br/>
-<sub><code>@CodeByHaamza</code></sub><br/>
 <sub>Extraction sûre & pédagogie</sub>
 </td>
 </tr>
 </table>
 
-</div>
+<table>
+<tr>
+<td>
+<img src="https://github-readme-stats.vercel.app/api?username=Picsou06&show_icons=true&hide_border=true&title_color=7F7FD5&icon_color=91EAE4&text_color=808080&bg_color=00000000" width="400" alt="Stats Evan" />
+</td>
+<td>
+<img src="https://github-readme-stats.vercel.app/api?username=CodeByHaamza&show_icons=true&hide_border=true&title_color=7F7FD5&icon_color=91EAE4&text_color=808080&bg_color=00000000" width="400" alt="Stats Hamza" />
+</td>
+</tr>
+</table>
 
-<img src="assets/divider.svg" width="100%" alt="" />
+</div>
 
 ## 🗺️ Répartition du travail
 
@@ -188,8 +208,6 @@ cohérente du projet, de la conception à la vérification.
 - 🔴 **Mode service** (petite API HTTP) analysant un flux dans un worker isolé.
 - 🔴 **Banc d'essai** mesurant le temps avant refus sur un corpus synthétique.
 
-<img src="assets/divider.svg" width="100%" alt="" />
-
 ## 🧪 Tests
 
 ```bash
@@ -199,8 +217,6 @@ pytest -q
 ```
 
 La CI rejoue cette suite sur Python 3.10, 3.11 et 3.12, puis construit l'image Docker.
-
-<img src="assets/divider.svg" width="100%" alt="" />
 
 ## ⚖️ Éthique
 

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 170" width="660" height="170" role="img" aria-label="Animation ASCII du fonctionnement">
+	<rect x="6" y="6" width="648" height="158" rx="12" fill="#11151f"/>
+	<rect x="6" y="6" width="648" height="30" rx="12" fill="#1b2130"/>
+	<rect x="6" y="24" width="648" height="12" fill="#1b2130"/>
+	<circle cx="26" cy="21" r="5" fill="#ff5f57"/>
+	<circle cx="44" cy="21" r="5" fill="#febc2e"/>
+	<circle cx="62" cy="21" r="5" fill="#28c840"/>
+	<text x="330" y="25" text-anchor="middle" font-family="Fira Code, monospace" font-size="11" fill="#8a93a6">live://zipguard</text>
+
+	<g font-family="Fira Code, monospace" font-size="16" font-weight="600">
+		<g fill="#91EAE4">
+			<animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.24;0.25;1" dur="6s" repeatCount="indefinite"/>
+			<text x="28" y="86">archive  [#.........]   3 Ko</text>
+			<text x="28" y="118" fill="#6f7a90" font-weight="400">zizi.zip  -  minuscule, l'air inoffensif</text>
+		</g>
+
+		<g fill="#86A8E7" opacity="0">
+			<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.25;0.26;0.49;0.5;1" dur="6s" repeatCount="indefinite"/>
+			<text x="28" y="86">lecture  [#####.....]   décompression...</text>
+			<text x="28" y="118" fill="#6f7a90" font-weight="400">         &gt;&gt;&gt;  &gt;&gt;&gt;  &gt;&gt;&gt;</text>
+		</g>
+
+		<g fill="#ff5f57" opacity="0">
+			<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.5;0.51;0.74;0.75;1" dur="6s" repeatCount="indefinite"/>
+			<text x="28" y="86">déclaré  [##########]   9.8 Go  !!!</text>
+			<text x="28" y="118" fill="#febc2e" font-weight="400">   *  B O O M  *   ratio 3 210 000x</text>
+		</g>
+
+		<g fill="#28c840" opacity="0">
+			<animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.75;0.76;0.99;1" dur="6s" repeatCount="indefinite"/>
+			<text x="28" y="86">ZipGuard  ⛔  REFUSÉ avant d'ouvrir</text>
+			<text x="28" y="118" fill="#6f7a90" font-weight="400">   service protégé.   [ OK ]</text>
+		</g>
+	</g>
+</svg>

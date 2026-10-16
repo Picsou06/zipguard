@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" role="img" aria-label="Simulation d'un scan ZipGuard">
+	<defs>
+		<linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+			<stop offset="0" stop-color="#7F7FD5"/>
+			<stop offset="1" stop-color="#91EAE4"/>
+		</linearGradient>
+	</defs>
+
+	<rect x="8" y="8" width="744" height="364" rx="14" fill="#11151f"/>
+	<rect x="8" y="8" width="744" height="36" rx="14" fill="#1b2130"/>
+	<rect x="8" y="30" width="744" height="14" fill="#1b2130"/>
+	<circle cx="32" cy="26" r="6" fill="#ff5f57"/>
+	<circle cx="54" cy="26" r="6" fill="#febc2e"/>
+	<circle cx="76" cy="26" r="6" fill="#28c840"/>
+	<text x="376" y="30" text-anchor="middle" font-family="Fira Code, monospace" font-size="12"
+		fill="#8a93a6">zipguard — simulation</text>
+
+	<g font-family="Fira Code, monospace" font-size="16">
+		<text x="34" y="92" fill="#f2f4f8">
+			<tspan fill="#28c840">$</tspan> zipguard scan suspect.zip
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.03;0.06;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+
+		<g>
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.1;0.13;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+			<text x="34" y="126" fill="#c7cede">  lecture des métadonnées</text>
+			<g transform="translate(300,121)">
+				<circle r="9" fill="none" stroke="#86A8E7" stroke-width="3" stroke-dasharray="30 70" stroke-linecap="round">
+					<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite"/>
+					<animate attributeName="opacity" values="1;1;0" keyTimes="0;0.30;0.33" dur="11s" repeatCount="indefinite"/>
+				</circle>
+			</g>
+			<text x="296" y="126" fill="#28c840">
+				✓
+				<animate attributeName="opacity" values="0;0;1" keyTimes="0;0.31;0.34" dur="11s" repeatCount="indefinite"/>
+			</text>
+		</g>
+
+		<text x="34" y="160" fill="#c7cede">  compressé   : <tspan fill="#91EAE4">3.2 KiB</tspan>
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.34;0.37;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+		<text x="34" y="192" fill="#c7cede">  déclaré     : <tspan fill="#febc2e">9.8 GiB</tspan>
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.42;0.45;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+	</g>
+
+	<g>
+		<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.46;0.49;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		<rect x="34" y="212" width="430" height="14" rx="7" fill="#232a3a"/>
+		<rect x="34" y="212" width="0" height="14" rx="7" fill="url(#bar)">
+			<animate attributeName="width" values="0;0;430;430" keyTimes="0;0.47;0.66;1" dur="11s" repeatCount="indefinite"/>
+		</rect>
+		<rect x="34" y="212" width="430" height="14" rx="7" fill="#ff5f57" opacity="0">
+			<animate attributeName="opacity" values="0;0;0.85;0.85" keyTimes="0;0.64;0.68;1" dur="11s" repeatCount="indefinite"/>
+		</rect>
+		<text x="474" y="224" font-family="Fira Code, monospace" font-size="13" fill="#8a93a6">mémoire</text>
+	</g>
+
+	<g font-family="Fira Code, monospace" font-size="16">
+		<text x="34" y="262" fill="#c7cede">  ratio       : <tspan fill="#ff5f57" font-weight="700">3 210 000x</tspan>
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.60;0.63;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+		<text x="34" y="300" font-weight="700" fill="#ff5f57">  ⛔ VERDICT : DANGEREUSE  (ratio &gt; 100x)
+			<animate attributeName="opacity" values="0;0;0;1;1;1;0" keyTimes="0;0.70;0.72;0.74;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+		<text x="34" y="334" fill="#8a93a6">  extraction refusée — service protégé ✅
+			<animate attributeName="opacity" values="0;0;1;1;1;0" keyTimes="0;0.80;0.83;0.9;0.95;1" dur="11s" repeatCount="indefinite"/>
+		</text>
+	</g>
+</svg>

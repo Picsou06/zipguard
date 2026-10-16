@@ -1,0 +1,12 @@
+services:
+  zipguard:
+    build:
+      context: ./zipguard.app
+      dockerfile: Dockerfile
+    image: zipguard:1.0.0
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["zipguard"]
+    command: ["--help"]

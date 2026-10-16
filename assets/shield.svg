@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 220" width="760" height="220" role="img" aria-label="ZipGuard">
+	<defs>
+		<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+			<stop offset="0" stop-color="#7F7FD5"/>
+			<stop offset="0.55" stop-color="#86A8E7"/>
+			<stop offset="1" stop-color="#91EAE4"/>
+		</linearGradient>
+		<linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+			<stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+			<stop offset="0.5" stop-color="#ffffff" stop-opacity="0.75"/>
+			<stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+		</linearGradient>
+		<clipPath id="shieldClip">
+			<path d="M110 26 L178 50 V110 C178 150 146 178 110 196 C74 178 42 150 42 110 V50 Z"/>
+		</clipPath>
+		<filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+			<feGaussianBlur stdDeviation="6"/>
+		</filter>
+	</defs>
+
+	<circle cx="110" cy="110" r="96" fill="#91EAE4" opacity="0.18" filter="url(#soft)">
+		<animate attributeName="r" values="88;100;88" dur="3s" repeatCount="indefinite"/>
+		<animate attributeName="opacity" values="0.12;0.26;0.12" dur="3s" repeatCount="indefinite"/>
+	</circle>
+
+	<path d="M110 26 L178 50 V110 C178 150 146 178 110 196 C74 178 42 150 42 110 V50 Z" fill="url(#g)"/>
+	<path d="M110 26 L178 50 V110 C178 150 146 178 110 196 C74 178 42 150 42 110 V50 Z"
+		fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="2"/>
+
+	<g clip-path="url(#shieldClip)">
+		<rect x="-200" y="20" width="120" height="200" fill="url(#sheen)" transform="skewX(-18)">
+			<animate attributeName="x" values="-200;320" dur="2.6s" repeatCount="indefinite"/>
+		</rect>
+	</g>
+
+	<text x="110" y="124" text-anchor="middle" font-family="Fira Code, Consolas, monospace"
+		font-size="46" font-weight="700" fill="#ffffff">ZG</text>
+
+	<text x="220" y="96" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="52"
+		font-weight="800" fill="url(#g)">ZipGuard</text>
+	<text x="222" y="138" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20"
+		fill="#5b6472">Mesurer avant de décompresser.</text>
+
+	<g font-family="Fira Code, monospace" font-size="15" fill="#86A8E7">
+		<text x="222" y="176">
+			<tspan opacity="0">scan</tspan>
+			<animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="4s" repeatCount="indefinite"/>
+		</text>
+	</g>
+	<g font-family="Fira Code, monospace" font-size="15">
+		<text x="300" y="176" fill="#7F7FD5">➜</text>
+		<text x="326" y="176" fill="#5b6472">mesurer</text>
+		<text x="430" y="176" fill="#7F7FD5">➜</text>
+		<text x="456" y="176" fill="#5b6472">décider</text>
+		<text x="556" y="176" fill="#7F7FD5">➜</text>
+		<text x="582" y="176" fill="#5b6472">protéger</text>
+	</g>
+
+	<circle cx="690" cy="92" r="7" fill="#91EAE4">
+		<animate attributeName="opacity" values="0.3;1;0.3" dur="1.4s" repeatCount="indefinite"/>
+	</circle>
+</svg>

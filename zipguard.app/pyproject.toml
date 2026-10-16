@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zipguard"
+version = "1.0.0"
+description = "Boîte à outils éducative et défensive contre les bombes de décompression."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Evan D" }]
+keywords = ["security", "zip", "decompression-bomb", "education", "defense"]
+
+[project.scripts]
+zipguard = "zipguard.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

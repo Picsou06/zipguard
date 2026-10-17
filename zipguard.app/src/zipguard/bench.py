@@ -3,6 +3,8 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
+import struct
 import tarfile
 import time
 import zipfile
@@ -116,6 +118,45 @@ def _targz(path: Path, files: dict[str, bytes]) -> Path:
 	return path
 
 
+def _overlapping_zip(path: Path, copies: int, payload: bytes) -> Path:
+	"""
+	Description: Fabrique une archive dont plusieurs entrées pointent vers le même bloc compressé.
+	Usage: _overlapping_zip(directory / "recouvrement.zip", 20, payload).
+	Inputs: path (Path) destination, copies (int) nombre de références, payload (bytes) contenu réel.
+	Outputs: Path de l'archive écrite.
+
+	Troisième famille du cours : l'archive ne coûte qu'un bloc sur le disque mais en promet
+	autant que de références. Elle reste bornée par payload, donc inoffensive.
+	"""
+
+	seed = path.with_suffix(".seed")
+	with zipfile.ZipFile(seed, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+		archive.writestr("fichier00.txt", payload)
+
+	blob = seed.read_bytes()
+	start = blob.rfind(b"PK")
+	cd_size = struct.unpack("<I", blob[start + 12 : start + 16])[0]
+	cd_offset = struct.unpack("<I", blob[start + 16 : start + 20])[0]
+	local_part = blob[:cd_offset]
+	central = blob[cd_offset : cd_offset + cd_size]
+	name_length = struct.unpack("<H", central[28:30])[0]
+
+	directory = bytearray()
+	for index in range(copies):
+		record = bytearray(central)
+		record[46 : 46 + name_length] = f"fichier{index:02d}.txt".encode()
+		directory += record
+
+	eocd = bytearray(b"PK")
+	eocd += struct.pack("<HHHH", 0, 0, copies, copies)
+	eocd += struct.pack("<II", len(directory), len(local_part))
+	eocd += struct.pack("<H", 0)
+
+	path.write_bytes(local_part + bytes(directory) + bytes(eocd))
+	seed.unlink()
+	return path
+
+
 def build_corpus(directory: Path) -> list[Case]:
 	"""
 	Description: Fabrique un corpus synthétique couvrant chaque garde fou, sans rien d'offensif.
@@ -138,6 +179,8 @@ def build_corpus(directory: Path) -> list[Case]:
 	nested_outer = directory / "imbriquee.zip"
 	with zipfile.ZipFile(nested_outer, "w", compression=zipfile.ZIP_STORED) as archive:
 		archive.write(nested_inner, "interne.zip")
+
+	overlapping = _overlapping_zip(directory / "recouvrement.zip", 20, os.urandom(20_000) * 50)
 
 	plain = directory / "pas-une-archive.txt"
 	plain.write_text("Ceci n'est pas une archive, et ZipGuard doit le dire sans planter.")
@@ -220,6 +263,13 @@ def build_corpus(directory: Path) -> list[Case]:
 			limits=Limits(max_ratio=50.0),
 			expectation=False,
 			guard="flux_compresse",
+		),
+		Case(
+			name="recouvrement.zip",
+			path=overlapping,
+			limits=Limits(max_ratio=100.0),
+			expectation=False,
+			guard="recouvrement",
 		),
 		Case(
 			name="pas-une-archive.txt",

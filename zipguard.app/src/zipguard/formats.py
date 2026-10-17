@@ -8,6 +8,7 @@ import lzma
 import shutil
 import tarfile
 import tempfile
+import warnings
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -49,6 +50,19 @@ class ReadCapExceeded(Exception):
 		super().__init__(f"Lecture coupée à {read} o, plafond de {cap} o dépassé.")
 		self.cap = cap
 		self.read = read
+
+
+# Tout ce qui peut sortir d'une tentative de lecture d'une entrée hostile ou abimée. Une
+# archive trafiquée doit produire un verdict, jamais une trace d'exception.
+SNIFF_ERRORS = (
+	OSError,
+	EOFError,
+	KeyError,
+	ValueError,
+	ReadCapExceeded,
+	tarfile.TarError,
+	zipfile.BadZipFile,
+)
 
 
 @dataclass(frozen=True)
@@ -279,21 +293,24 @@ class Archive:
 		Outputs: bytes lus, vides si l'entrée est illisible ou sans contenu.
 
 		Une entrée illisible n'est pas une erreur ici : c'est juste une entrée dont on ne
-		saura pas si elle cache une archive, et l'inspection le signalera autrement.
+		saura pas si elle cache une archive, et l'inspection le signalera autrement. Une
+		archive trafiquée doit produire un verdict, jamais une trace d'exception : pour un
+		outil défensif, planter sur l'entrée hostile est le pire mode de défaillance.
 		"""
 
 		if entry.is_dir or entry.is_link or entry.size <= 0:
 			return b""
 		try:
 			stream = self.open(entry)
-		except (OSError, KeyError, ValueError, ReadCapExceeded):
+		except SNIFF_ERRORS:
 			return b""
 		try:
 			return stream.read(size)
-		except (OSError, ValueError, ReadCapExceeded):
+		except SNIFF_ERRORS:
 			return b""
 		finally:
-			stream.close()
+			with contextlib.suppress(Exception):
+				stream.close()
 
 	def close(self) -> None:
 		"""
@@ -327,8 +344,22 @@ class ZipArchive(Archive):
 
 	@property
 	def compressed_total(self) -> int:
-		total = sum(info.compress_size for info in self._zip.infolist())
-		return max(1, total)
+		"""
+		Description: Taille compressée de référence, plafonnée par la taille réelle du fichier.
+		Usage: handle.compressed_total.
+		Inputs: aucun.
+		Outputs: int octets, au minimum 1.
+
+		Prendre la somme des tailles compressées annoncées serait naïf : dans une bombe à
+		entrées recouvrantes, plusieurs entrées du répertoire central pointent vers le même
+		bloc compressé, donc cette somme est gonflée autant de fois qu'il y a de références
+		et le ratio s'en trouve divisé d'autant. La taille du fichier sur le disque, elle,
+		ne ment pas. On garde la plus petite des deux.
+		"""
+
+		declared = sum(info.compress_size for info in self._zip.infolist())
+		real = self.path.stat().st_size
+		return max(1, min(declared, real) if declared else real)
 
 	@staticmethod
 	def _is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -354,7 +385,21 @@ class ZipArchive(Archive):
 		]
 
 	def open(self, entry: Entry) -> IO[bytes]:
-		return self._zip.open(entry.name)
+		"""
+		Description: Ouvre une entrée ZIP en lecture, sans laisser zipfile écrire sur la sortie.
+		Usage: with handle.open(entry) as stream: stream.read(4096).
+		Inputs: entry (Entry) entrée à lire.
+		Outputs: objet fichier binaire à refermer par l'appelant.
+
+		zipfile émet un avertissement quand plusieurs entrées se recouvrent. Le signal est
+		juste, mais ZipGuard le traite déjà par le ratio calculé contre la taille réelle du
+		fichier : le laisser remonter ne ferait que barbouiller le rapport d'une ligne que
+		l'utilisateur n'a pas demandée, au milieu du verdict.
+		"""
+
+		with warnings.catch_warnings():
+			warnings.simplefilter("ignore", UserWarning)
+			return self._zip.open(entry.name)
 
 	def close(self) -> None:
 		self._zip.close()

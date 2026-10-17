@@ -18,6 +18,7 @@ def test_corpus_covers_every_guard(tmp_path: Path) -> None:
 		"imbrication",
 		"plafond_de_lecture",
 		"format",
+		"recouvrement",
 	} <= guards
 
 

@@ -1,15 +1,34 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "zipguard"
-version = "1.0.0"
+version = "2.0.0"
 description = "Boîte à outils éducative et défensive contre les bombes de décompression."
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "Evan D" }]
-keywords = ["security", "zip", "decompression-bomb", "education", "defense"]
+license = "MIT"
+authors = [{ name = "Evan D" }, { name = "Hamza Karrouchi" }]
+keywords = ["security", "zip", "tar", "decompression-bomb", "education", "defense"]
+classifiers = [
+	"Development Status :: 4 - Beta",
+	"Environment :: Console",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3 :: Only",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Topic :: Security",
+	"Natural Language :: French",
+]
+
+[project.optional-dependencies]
+7z = ["py7zr>=0.21"]
+
+[project.urls]
+Source = "https://github.com/Picsou06/zipguard"
+Issues = "https://github.com/Picsou06/zipguard/issues"
 
 [project.scripts]
 zipguard = "zipguard.__main__:main"
@@ -20,3 +39,40 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+indent-width = 1
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+indent-style = "tab"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+	"E",    # pycodestyle
+	"F",    # pyflakes
+	"W",    # avertissements pycodestyle
+	"I",    # tri des imports
+	"UP",   # tournures modernisables
+	"B",    # pièges courants (bugbear)
+	"C4",   # compréhensions
+	"SIM",  # simplifications
+	"RUF",  # règles propres à ruff
+]
+ignore = [
+	"E501",    # la longueur de ligne est déjà tenue par le formateur
+	"W191",    # le projet est indenté aux tabulations, volontairement
+	"RUF001",  # les apostrophes typographiques sont voulues dans les messages français
+	"RUF002",
+	"RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+# Les adaptateurs rendent volontairement un flux ouvert que l'appelant referme : c'est tout
+# l'intérêt de pouvoir lire une entrée par blocs sans la charger en mémoire.
+"src/zipguard/formats.py" = ["SIM115"]

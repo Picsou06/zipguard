@@ -38,12 +38,8 @@ def _add_threshold_flags(parser: argparse.ArgumentParser) -> None:
 
 	defaults = Limits()
 	parser.add_argument("--max-ratio", type=float, default=defaults.max_ratio)
-	parser.add_argument(
-		"--max-total-mb", type=int, default=defaults.max_total_bytes // 1_000_000
-	)
-	parser.add_argument(
-		"--max-entry-mb", type=int, default=defaults.max_entry_bytes // 1_000_000
-	)
+	parser.add_argument("--max-total-mb", type=int, default=defaults.max_total_bytes // 1_000_000)
+	parser.add_argument("--max-entry-mb", type=int, default=defaults.max_entry_bytes // 1_000_000)
 	parser.add_argument("--max-entries", type=int, default=defaults.max_entries)
 	parser.add_argument("--max-depth", type=int, default=defaults.max_depth)
 
@@ -58,7 +54,9 @@ def _add_render_flags(parser: argparse.ArgumentParser) -> None:
 
 	parser.add_argument("--json", action="store_true", help="Sortie JSON au lieu du rapport texte.")
 	parser.add_argument("--no-color", action="store_true", help="Désactive les couleurs ANSI.")
-	parser.add_argument("--ascii", action="store_true", help="Remplace les pictogrammes par de l'ASCII.")
+	parser.add_argument(
+		"--ascii", action="store_true", help="Remplace les pictogrammes par de l'ASCII."
+	)
 
 
 def _limits_from(args: argparse.Namespace) -> Limits:
@@ -79,9 +77,7 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 		max_ratio=args.max_ratio,
 		max_entries=args.max_entries,
 		max_depth=args.max_depth,
-		max_extract_bytes=(
-			defaults.max_extract_bytes if extract_mb is None else extract_mb * 1_000_000
-		),
+		max_extract_bytes=(defaults.max_extract_bytes if extract_mb is None else extract_mb * 1_000_000),
 		min_free_bytes=(defaults.min_free_bytes if free_mb is None else free_mb * 1_000_000),
 	)
 
@@ -202,7 +198,9 @@ def _command_extract(args: argparse.Namespace) -> int:
 		if args.json:
 			print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False, indent=2))
 		else:
-			print(render(str(args.archive), scanner.inspect(args.archive), limits=limits, **_render_options(args)))
+			print(
+				render(str(args.archive), scanner.inspect(args.archive), limits=limits, **_render_options(args))
+			)
 			print(f"  Extraction refusée : {error}\n")
 		return EXIT_UNSAFE
 	except OSError as error:

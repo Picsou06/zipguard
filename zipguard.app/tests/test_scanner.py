@@ -5,7 +5,6 @@ import zipfile
 from pathlib import Path
 
 from conftest import write_tar
-
 from zipguard import Limits, Scanner
 
 

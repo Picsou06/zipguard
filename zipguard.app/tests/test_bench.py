@@ -111,12 +111,13 @@ def test_long_case_names_do_not_collide_with_the_next_column() -> None:
 			reason="raison",
 		)
 	]
-	line = [row for row in render_bench(results, color=False).splitlines() if "un-nom" in row][0]
+	rows = render_bench(results, color=False).splitlines()
+	line = next(row for row in rows if "un-nom" in row)
 	assert "un-nom-de-cas-vraiment-tres-long.tar.gzmax_depth" not in line
 	assert "un-nom-de-cas-vraiment-tres-long.tar.gz " in line
 
 
 def test_read_cap_case_reports_what_it_read_before_cutting(tmp_path: Path) -> None:
 	results = run_bench(build_corpus(tmp_path), repeat=1)
-	capped = [result for result in results if result.guard == "plafond_de_lecture"][0]
+	capped = next(result for result in results if result.guard == "plafond_de_lecture")
 	assert capped.read_bytes > 0

@@ -57,8 +57,7 @@ def build_demo_archive(
 
 	if archive_format not in _WRITERS:
 		raise ValueError(
-			f"Format de démonstration inconnu : {archive_format}. "
-			f"Formats acceptés : {', '.join(FORMATS)}."
+			f"Format de démonstration inconnu : {archive_format}. Formats acceptés : {', '.join(FORMATS)}."
 		)
 
 	target_bytes = megabytes * 1_000_000

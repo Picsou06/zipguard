@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import ntpath
 import shutil
 import tarfile
@@ -193,9 +194,7 @@ class Scanner:
 				f"{human_bytes(stats['biggest_entry'])} > {human_bytes(limits.max_entry_bytes)}."
 			)
 		if stats["ratio"] > limits.max_ratio:
-			reasons.append(
-				f"Ratio de compression anormal : {stats['ratio']:.1f}x > {limits.max_ratio}x."
-			)
+			reasons.append(f"Ratio de compression anormal : {stats['ratio']:.1f}x > {limits.max_ratio}x.")
 		return reasons
 
 	def _nested_candidates(self, handle: Archive, entries: list[Entry]) -> list[Entry]:
@@ -375,8 +374,7 @@ class Scanner:
 		for entry in entries:
 			if entry.is_link:
 				raise ExtractionRefused(
-					f"Lien refusé : {entry.name} pointe hors de l'archive et pourrait "
-					"rediriger une écriture."
+					f"Lien refusé : {entry.name} pointe hors de l'archive et pourrait rediriger une écriture."
 				)
 			planned.append((entry, self._resolve(destination, entry.name)))
 		return planned
@@ -427,9 +425,7 @@ class Scanner:
 
 		free = shutil.disk_usage(where).free
 		if free < self.limits.min_free_bytes:
-			raise QuotaExceeded(
-				f"Extraction arrêtée : il ne reste que {human_bytes(free)} sur le disque."
-			)
+			raise QuotaExceeded(f"Extraction arrêtée : il ne reste que {human_bytes(free)} sur le disque.")
 
 	@staticmethod
 	def _cleanup(created: list[Path]) -> None:
@@ -441,10 +437,8 @@ class Scanner:
 		"""
 
 		for target in created:
-			try:
+			with contextlib.suppress(OSError):  # nettoyage best effort
 				target.unlink(missing_ok=True)
-			except OSError:  # pragma: no cover - nettoyage best effort
-				pass
 
 	@staticmethod
 	def _resolve(destination: Path, name: str) -> Path:

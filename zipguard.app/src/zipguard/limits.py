@@ -57,7 +57,7 @@ class Verdict:
 	safe: bool
 	reasons: list[str]
 	stats: dict
-	children: list["Verdict"] = field(default_factory=list)
+	children: list[Verdict] = field(default_factory=list)
 
 	def as_dict(self) -> dict:
 		"""

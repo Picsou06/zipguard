@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from conftest import write_tar, write_zip
-
 from zipguard.__main__ import EXIT_ERROR, EXIT_OK, EXIT_UNSAFE, main
 
 
@@ -87,13 +86,15 @@ def test_extract_json_reports_the_bytes_written(tmp_path: Path, capsys) -> None:
 
 def test_extract_honours_the_extraction_quota(tmp_path: Path, capsys) -> None:
 	archive = write_zip(tmp_path / "ok.zip", {"note.txt": b"A" * 100_000})
-	code = main([
-		"extract",
-		str(archive),
-		str(tmp_path / "out"),
-		"--max-extract-mb",
-		"0",
-	])
+	code = main(
+		[
+			"extract",
+			str(archive),
+			str(tmp_path / "out"),
+			"--max-extract-mb",
+			"0",
+		]
+	)
 	assert code == EXIT_UNSAFE
 
 

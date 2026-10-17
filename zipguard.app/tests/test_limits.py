@@ -22,4 +22,4 @@ def test_limits_are_immutable() -> None:
 def test_human_bytes_scales_units() -> None:
 	assert human_bytes(0) == "0.0 o"
 	assert human_bytes(1536).endswith("KiB")
-	assert human_bytes(5 * 1024 ** 3).endswith("GiB")
+	assert human_bytes(5 * 1024**3).endswith("GiB")

@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from conftest import write_tar, write_zip
-
 from zipguard import Limits
 from zipguard.service import ScanTimeout, build_server, scan_in_worker
 

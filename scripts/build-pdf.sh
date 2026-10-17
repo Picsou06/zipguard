@@ -5,7 +5,43 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CSS="$ROOT/assets/pdf.css"
 OUT="$ROOT/docs/pdf"
 TMP="$(mktemp -d)"
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# Le navigateur qui imprime le PDF est cherché au lieu d'être codé en dur : le script doit
+# tourner sur la machine de chacun, pas seulement sur un macOS avec Chrome installé.
+find_browser() {
+	if [ -n "${CHROME:-}" ] && [ -x "${CHROME}" ]; then
+		printf '%s' "$CHROME"
+		return 0
+	fi
+	local candidates=(
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+		"/Applications/Chromium.app/Contents/MacOS/Chromium"
+		"/c/Program Files/Google/Chrome/Application/chrome.exe"
+		"/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+		"/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+	)
+	local candidate
+	for candidate in "${candidates[@]}"; do
+		[ -x "$candidate" ] && printf '%s' "$candidate" && return 0
+	done
+	for candidate in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge; do
+		if command -v "$candidate" >/dev/null 2>&1; then
+			command -v "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+command -v pandoc >/dev/null 2>&1 || {
+	echo "pandoc est requis : https://pandoc.org/installing.html" >&2
+	exit 1
+}
+
+CHROME="$(find_browser)" || {
+	echo "Aucun navigateur Chromium trouve. Installe Chrome ou Edge, ou passe CHROME=/chemin/vers/le/binaire." >&2
+	exit 1
+}
 DATE="$(date +%d/%m/%Y)"
 
 trap 'rm -rf "$TMP"' EXIT
@@ -35,8 +71,8 @@ cat >> "$TMP/full.html" <<HTML
 	<h1>Sommaire</h1>
 	<ol>
 		<li><span class="t">Comment ça marche</span><span class="d">— le mécanisme des zip bombs</span></li>
-		<li><span class="t">Prévention</span><span class="d">— six garde fous et la mesure</span></li>
-		<li><span class="t">Anatomie du dépôt</span><span class="d">— le code et la frontière de sécurité</span></li>
+		<li><span class="t">Prévention</span><span class="d">— huit garde fous et la mesure</span></li>
+		<li><span class="t">Anatomie du dépôt</span><span class="d">— un adaptateur par format, un seul jeu de seuils</span></li>
 	</ol>
 </div>
 HTML

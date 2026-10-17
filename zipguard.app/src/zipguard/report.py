@@ -142,10 +142,7 @@ def _summarise(verdict: Verdict, glyphs: dict) -> str:
 	if "ratio" not in stats:
 		return str(kind)
 	dot = glyphs["dot"]
-	return (
-		f"{kind} {dot} ratio {stats['ratio']}x {dot} "
-		f"{human_bytes(stats['total_uncompressed'])}"
-	)
+	return f"{kind} {dot} ratio {stats['ratio']}x {dot} {human_bytes(stats['total_uncompressed'])}"
 
 
 def _render_children(verdict: Verdict, enabled: bool, glyphs: dict, depth: int = 0) -> list[str]:

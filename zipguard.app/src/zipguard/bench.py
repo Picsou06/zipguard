@@ -327,8 +327,7 @@ def render_bench(
 	total = sum(result.elapsed_ms for result in results)
 	lines += [
 		f"  {paint(rule, 'dim', enabled=enabled)}",
-		f"  {len(results)} cas, {total:.1f} ms au total, "
-		f"{len(unexpected)} verdict(s) inattendu(s)",
+		f"  {len(results)} cas, {total:.1f} ms au total, {len(unexpected)} verdict(s) inattendu(s)",
 		"",
 	]
 	return "\n".join(lines)

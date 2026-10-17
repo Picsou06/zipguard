@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import io
 import lzma
+import shutil
 import tarfile
+import tempfile
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Iterator
+from typing import IO
 
 DEFAULT_READ_CAP = 1_000_000_000
 
@@ -302,7 +306,7 @@ class Archive:
 	def _read_entries(self) -> list[Entry]:
 		raise NotImplementedError
 
-	def __enter__(self) -> "Archive":
+	def __enter__(self) -> Archive:
 		return self
 
 	def __exit__(self, *exc_info: object) -> None:
@@ -441,10 +445,8 @@ class TarArchive(Archive):
 
 	def close(self) -> None:
 		for stream in self._open_streams:
-			try:
+			with contextlib.suppress(Exception):  # fermeture best effort
 				stream.close()
-			except Exception:  # pragma: no cover - fermeture best effort
-				pass
 		self._open_streams.clear()
 
 
@@ -506,6 +508,13 @@ class SevenZipArchive(Archive):
 	Usage: pip install "zipguard[7z]" puis open_archive(Path("a.7z")).
 	Inputs: identiques à Archive.
 	Outputs: entrées issues du manifeste 7z.
+
+	Limite de confiance à connaître : py7zr ne sait pas rendre une entrée sous forme de flux
+	borné, il ne sait que l'écrire sur le disque. Lire une entrée passe donc par un dossier
+	temporaire privé. La taille annoncée est vérifiée avant l'extraction, et la taille
+	réelle après : un manifeste menteur est donc détecté, mais seulement une fois l'entrée
+	écrite. L'exposition est bornée à une entrée à la fois et le dossier est effacé à la
+	fermeture. Les autres formats n'ont pas ce détour, parce qu'ils savent se lire par blocs.
 	"""
 
 	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
@@ -514,11 +523,11 @@ class SevenZipArchive(Archive):
 			import py7zr
 		except ImportError as error:  # pragma: no cover - dépend de l'environnement
 			raise UnsupportedArchive(
-				"Archive 7z détectée : installe la dépendance optionnelle avec "
-				'pip install "zipguard[7z]".'
+				'Archive 7z détectée : installe la dépendance optionnelle avec pip install "zipguard[7z]".'
 			) from error
 		self._py7zr = py7zr
 		self._archive = py7zr.SevenZipFile(self.path, mode="r")
+		self._workdirs: list[Path] = []
 
 	def _read_entries(self) -> list[Entry]:
 		entries: list[Entry] = []
@@ -536,15 +545,33 @@ class SevenZipArchive(Archive):
 	def open(self, entry: Entry) -> IO[bytes]:
 		if entry.size > self.read_cap:
 			raise ReadCapExceeded(self.read_cap, entry.size)
+
+		workdir = Path(tempfile.mkdtemp(prefix="zipguard-7z-"))
+		self._workdirs.append(workdir)
+
 		self._archive.reset()
-		extracted = self._archive.read([entry.name]) or {}
-		stream = extracted.get(entry.name)
-		if stream is None:
-			raise KeyError(f"Entrée introuvable dans l'archive : {entry.name}")
-		return stream
+		self._archive.extract(path=workdir, targets=[entry.name])
+
+		extracted = workdir / entry.name
+		if not extracted.is_file():
+			found = [candidate for candidate in workdir.rglob("*") if candidate.is_file()]
+			if not found:
+				raise KeyError(f"Entrée introuvable dans l'archive : {entry.name}")
+			extracted = found[0]
+
+		actual = extracted.stat().st_size
+		if actual > self.read_cap:
+			raise ReadCapExceeded(self.read_cap, actual)
+
+		return open(extracted, "rb")
 
 	def close(self) -> None:
-		self._archive.close()
+		try:
+			self._archive.close()
+		finally:
+			for workdir in self._workdirs:
+				shutil.rmtree(workdir, ignore_errors=True)
+			self._workdirs.clear()
 
 
 def open_archive(path: Path, read_cap: int = DEFAULT_READ_CAP) -> Archive:

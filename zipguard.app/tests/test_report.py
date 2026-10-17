@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 from conftest import write_zip
-
 from zipguard import Limits, Scanner, render, render_json
 from zipguard.report import glyphs_supported
 

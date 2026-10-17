@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from conftest import write_tar, write_zip
-
 from zipguard import Limits, Scanner
 from zipguard.scanner import ExtractionRefused, QuotaExceeded
 
@@ -57,7 +56,7 @@ def test_quota_breach_leaves_no_partial_files_behind(tmp_path: Path) -> None:
 
 def test_free_space_margin_is_honoured(tmp_path: Path) -> None:
 	archive = write_zip(tmp_path / "ok.zip", {"hello.txt": b"salut"})
-	scanner = Scanner(Limits(min_free_bytes=10 ** 18))
+	scanner = Scanner(Limits(min_free_bytes=10**18))
 	with pytest.raises(QuotaExceeded):
 		scanner.safe_extract(archive, tmp_path / "out")
 

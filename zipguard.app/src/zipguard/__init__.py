@@ -25,6 +25,7 @@ __all__ = [
 	"Scanner",
 	"UnsupportedArchive",
 	"Verdict",
+	"__version__",
 	"build_demo_archive",
 	"detect_kind",
 	"human_bytes",
@@ -33,5 +34,4 @@ __all__ = [
 	"render_json",
 	"sniff_kind",
 	"supported_kinds",
-	"__version__",
 ]

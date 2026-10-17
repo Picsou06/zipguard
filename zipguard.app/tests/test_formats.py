@@ -84,9 +84,8 @@ def test_reading_an_entry_returns_its_bytes(tmp_path: Path) -> None:
 
 def test_listing_a_tar_stops_at_the_read_cap(tmp_path: Path) -> None:
 	archive = write_tar(tmp_path / "bombe.tar.gz", {"gros.txt": b"A" * 5_000_000})
-	with open_archive(archive, read_cap=1_000_000) as handle:
-		with pytest.raises(ReadCapExceeded):
-			handle.entries()
+	with open_archive(archive, read_cap=1_000_000) as handle, pytest.raises(ReadCapExceeded):
+		handle.entries()
 
 
 def test_unsupported_file_raises(tmp_path: Path) -> None:
@@ -142,7 +141,7 @@ def test_zip_symlink_entry_is_flagged(tmp_path: Path) -> None:
 	path = tmp_path / "lien.zip"
 	with zipfile.ZipFile(path, "w") as handle:
 		info = zipfile.ZipInfo("lien")
-		info.external_attr = (0o120777 << 16)
+		info.external_attr = 0o120777 << 16
 		handle.writestr(info, "/etc/passwd")
 	with open_archive(path) as handle:
 		assert handle.entries()[0].is_link is True

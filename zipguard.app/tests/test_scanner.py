@@ -122,3 +122,10 @@ def test_biggest_entry_limit_is_rejected(tmp_path: Path) -> None:
 def test_missing_file_is_refused_without_crashing(tmp_path: Path) -> None:
 	verdict = Scanner().inspect(tmp_path / "fantome.zip")
 	assert verdict.safe is False
+
+
+def test_read_cap_records_the_bytes_read_before_cutting(tmp_path: Path) -> None:
+	archive = write_tar(tmp_path / "bombe.tar.gz", {"gros.txt": b"A" * 8_000_000})
+	verdict = Scanner(Limits(max_total_bytes=1_000_000)).inspect(archive)
+	assert verdict.stats["total_uncompressed"] > 1_000_000
+	assert verdict.stats["cut_at_cap"] is True

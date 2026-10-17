@@ -114,7 +114,17 @@ class Scanner:
 					f"Lecture coupée après {human_bytes(error.read)} : le contenu dépasse "
 					f"le plafond de {human_bytes(error.cap)}."
 				)
-				return Verdict(False, [reason], {**base, "kind": handle.kind, "measured": True})
+				return Verdict(
+					False,
+					[reason],
+					{
+						**base,
+						"kind": handle.kind,
+						"measured": True,
+						"total_uncompressed": error.read,
+						"cut_at_cap": True,
+					},
+				)
 			except _READ_ERRORS as error:
 				return Verdict(
 					False,
@@ -156,6 +166,7 @@ class Scanner:
 			"biggest_entry": max((entry.size for entry in entries), default=0),
 			"nested_archives": nested,
 			"links": sum(1 for entry in entries if entry.is_link),
+			"cut_at_cap": False,
 		}
 
 	def _threshold_reasons(self, stats: dict) -> list[str]:

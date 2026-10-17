@@ -285,7 +285,8 @@ def render_bench(
 	enabled = colour_enabled(color)
 	glyphs = UNICODE_GLYPHS if (glyphs_supported() if unicode is None else unicode) else ASCII_GLYPHS
 
-	widths = (24, 20, 10, 12, 11, 12)
+	name_width = max(24, max((len(result.name) for result in results), default=0) + 2)
+	widths = (name_width, 20, 10, 12, 11, 12)
 	header = (
 		"cas".ljust(widths[0])
 		+ "garde fou".ljust(widths[1])

@@ -1,0 +1,14 @@
+# Normalise les fins de ligne : le dépôt stocke en LF, chacun travaille avec ce que son
+# système préfère. Sans ce fichier, un aller-retour Windows transforme tout un fichier en
+# une seule ligne modifiée dans les diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.tar binary
+*.gz binary
+
+*.sh text eol=lf

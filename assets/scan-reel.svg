@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 803 542"
+	width="803" height="542" role="img"
+	aria-label="Sortie réelle de zipguard scan sur une archive à bombe imbriquée">
+	<rect x="0" y="0" width="803" height="542" rx="14" fill="#11151f"/>
+	<rect x="0" y="0" width="803" height="38" rx="14" fill="#1b2130"/>
+	<rect x="0" y="24" width="803" height="14" fill="#1b2130"/>
+	<circle cx="24" cy="19" r="6" fill="#ff5f57"/>
+	<circle cx="46" cy="19" r="6" fill="#febc2e"/>
+	<circle cx="68" cy="19" r="6" fill="#28c840"/>
+	<text x="401.5" y="24" text-anchor="middle" font-family="Fira Code, Consolas, monospace"
+		font-size="12" fill="#8a93a6">zipguard — sortie réelle, 23 lignes</text>
+
+	<g font-family="Fira Code, Consolas, monospace" font-size="13.5" xml:space="preserve">
+		<text xml:space="preserve" x="22" y="73.5" fill="#f2f4f8" font-weight="400" opacity="0"><tspan fill="#28c840">$</tspan> zipguard scan livraison.zip --max-ratio 20 --no-color<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0000;0.0208;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="93.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0067;0.0275;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="113.5" fill="#91EAE4" font-weight="700" opacity="0">  ZipGuard · rapport d'inspection<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0133;0.0342;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="133.5" fill="#1b2130" font-weight="400" opacity="0">  ────────────────────────────────────────────────────────────────────<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0200;0.0408;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="153.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0267;0.0475;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="173.5" fill="#ff5f57" font-weight="700" opacity="0">   ⛔  DANGEREUSE   livraison.zip<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0333;0.0542;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="193.5" fill="#c7cede" font-weight="400" opacity="0">       zip · tailles déclarées · profondeur 0<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0400;0.0608;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="213.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0467;0.0675;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="233.5" fill="#c7cede" font-weight="400" opacity="0">   entrées               2<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0533;0.0742;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="253.5" fill="#c7cede" font-weight="400" opacity="0">   taille compressée     3.9 KiB<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0600;0.0808;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="273.5" fill="#c7cede" font-weight="400" opacity="0">   taille décompressée   3.9 KiB<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0667;0.0875;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="293.5" fill="#c7cede" font-weight="400" opacity="0">   ratio                 1.0x        █░░░░░░░░░░░░░░░░░░░░░  seuil 20.0x<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0733;0.0942;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="313.5" fill="#c7cede" font-weight="400" opacity="0">   plus grosse entrée    3.9 KiB<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0800;0.1008;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="333.5" fill="#c7cede" font-weight="400" opacity="0">   archives imbriquées   1<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0867;0.1075;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="353.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0933;0.1142;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="373.5" fill="#f2f4f8" font-weight="700" opacity="0">   archives imbriquées<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1000;0.1208;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="393.5" fill="#ff5f57" font-weight="700" opacity="0">     ⛔ notes.txt  zip · ratio 1027.22x · 3.8 MiB<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1067;0.1275;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="413.5" fill="#8a93a6" font-weight="400" opacity="0">        └ Ratio de compression anormal : 1027.2x &gt; 20.0x.<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1133;0.1342;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="433.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1200;0.1408;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="453.5" fill="#f2f4f8" font-weight="700" opacity="0">   raisons du refus<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1267;0.1475;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="473.5" fill="#8a93a6" font-weight="400" opacity="0">     • Archive imbriquée dangereuse — notes.txt : Ratio de compression anormal : 1027.2x &gt; 20.0x.<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1333;0.1542;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="493.5" fill="#c7cede" font-weight="400" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1400;0.1608;1" dur="12s" repeatCount="indefinite"/></text>
+		<text xml:space="preserve" x="22" y="513.5" fill="#1b2130" font-weight="400" opacity="0">  ────────────────────────────────────────────────────────────────────<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.1467;0.1675;1" dur="12s" repeatCount="indefinite"/></text>
+	</g>
+</svg>

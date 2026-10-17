@@ -8,3 +8,6 @@ build/
 dist/
 samples/*.zip
 .DS_Store
+
+# cache des avatars téléchargés par scripts/build-orbit.py
+assets/.avatars/

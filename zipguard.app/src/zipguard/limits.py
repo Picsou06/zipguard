@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class Limits:
 	"""
-	Description: Seuils de sécurité appliqués lors de l'inspection d'une archive.
+	Description: Seuils de sécurité appliqués lors de l'inspection puis de l'extraction d'une archive.
 	Usage: Limits() pour les valeurs par défaut, ou Limits(max_ratio=50) pour durcir.
-	Inputs: max_total_bytes (int), max_entry_bytes (int), max_ratio (float), max_entries (int), max_depth (int).
+	Inputs: max_total_bytes (int), max_entry_bytes (int), max_ratio (float), max_entries (int), max_depth (int), max_extract_bytes (int), min_free_bytes (int), max_nested_scans (int).
 	Outputs: instance immuable transportant les seuils.
+
+	Les cinq premiers seuils décident du verdict, les trois derniers bornent le travail réel
+	fait sur le disque. Aucun n'est négociable au moment de l'extraction : un verdict sûr
+	n'autorise pas à écrire sans compter.
 	"""
 
 	max_total_bytes: int = 1_000_000_000
@@ -17,20 +21,71 @@ class Limits:
 	max_ratio: float = 100.0
 	max_entries: int = 10_000
 	max_depth: int = 2
+	max_extract_bytes: int = 1_000_000_000
+	min_free_bytes: int = 64_000_000
+	max_nested_scans: int = 64
+
+	def as_dict(self) -> dict:
+		"""
+		Description: Expose les seuils sous forme sérialisable, pour la sortie JSON et l'API.
+		Usage: json.dumps(limits.as_dict()).
+		Inputs: aucun.
+		Outputs: dict des seuils, clés identiques aux champs.
+		"""
+
+		return {
+			"max_total_bytes": self.max_total_bytes,
+			"max_entry_bytes": self.max_entry_bytes,
+			"max_ratio": self.max_ratio,
+			"max_entries": self.max_entries,
+			"max_depth": self.max_depth,
+			"max_extract_bytes": self.max_extract_bytes,
+			"min_free_bytes": self.min_free_bytes,
+			"max_nested_scans": self.max_nested_scans,
+		}
 
 
 @dataclass(frozen=True)
 class Verdict:
 	"""
-	Description: Résultat d'une inspection, sûr ou dangereux, avec la raison.
+	Description: Résultat d'une inspection, sûr ou dangereux, avec la raison et les archives filles.
 	Usage: retourné par Scanner.inspect ; lire .safe puis .reasons.
-	Inputs: safe (bool), reasons (list[str]), stats (dict).
-	Outputs: structure sérialisable décrivant la décision.
+	Inputs: safe (bool), reasons (list[str]), stats (dict), children (list[Verdict]).
+	Outputs: structure sérialisable décrivant la décision, récursivement.
 	"""
 
 	safe: bool
 	reasons: list[str]
 	stats: dict
+	children: list["Verdict"] = field(default_factory=list)
+
+	def as_dict(self) -> dict:
+		"""
+		Description: Convertit le verdict et toute sa descendance en structure JSON.
+		Usage: json.dumps(verdict.as_dict()).
+		Inputs: aucun.
+		Outputs: dict imbriqué, prêt pour json.dumps.
+		"""
+
+		return {
+			"safe": self.safe,
+			"verdict": "SURE" if self.safe else "DANGEREUSE",
+			"reasons": list(self.reasons),
+			"stats": dict(self.stats),
+			"children": [child.as_dict() for child in self.children],
+		}
+
+	def walk(self):
+		"""
+		Description: Parcourt le verdict puis toutes les archives imbriquées, en profondeur.
+		Usage: for node in verdict.walk(): ...
+		Inputs: aucun.
+		Outputs: générateur de Verdict, le parent avant ses enfants.
+		"""
+
+		yield self
+		for child in self.children:
+			yield from child.walk()
 
 
 def human_bytes(value: float) -> str:

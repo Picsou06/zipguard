@@ -40,7 +40,7 @@ _WRITERS = {"zip": _write_zip, "tar.gz": _write_targz}
 
 def build_demo_archive(
 	destination: Path,
-	text: str = "zizi",
+	text: str = "motif",
 	megabytes: int = 10,
 	archive_format: str = "zip",
 ) -> dict:

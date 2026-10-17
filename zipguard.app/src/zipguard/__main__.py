@@ -128,7 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 	demo = sub.add_parser("demo", help="Crée une archive de démonstration bornée.")
 	demo.add_argument("output", type=Path)
-	demo.add_argument("--text", default="zizi")
+	demo.add_argument("--text", default="motif")
 	demo.add_argument("--mb", type=int, default=10)
 	demo.add_argument("--format", dest="archive_format", choices=FORMATS, default="zip")
 

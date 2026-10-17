@@ -10,7 +10,7 @@ from zipguard.demo import SAFE_CAP_BYTES, build_demo_archive
 
 
 def test_demo_is_bounded(tmp_path: Path) -> None:
-	result = build_demo_archive(tmp_path / "demo.zip", text="zizi", megabytes=5)
+	result = build_demo_archive(tmp_path / "demo.zip", text="motif", megabytes=5)
 	assert result["uncompressed"] <= 5_000_000 + 10
 	assert result["compressed"] > 0
 	assert result["ratio"] > 1
@@ -28,7 +28,7 @@ def test_demo_rejects_zero(tmp_path: Path) -> None:
 
 def test_demo_decompresses_to_declared_size(tmp_path: Path) -> None:
 	path = tmp_path / "demo.zip"
-	result = build_demo_archive(path, text="zizi", megabytes=3)
+	result = build_demo_archive(path, text="motif", megabytes=3)
 	with zipfile.ZipFile(path) as archive:
 		info = archive.infolist()[0]
 		assert info.file_size == result["uncompressed"]
@@ -73,3 +73,20 @@ def test_demo_tar_gz_is_scannable(tmp_path: Path) -> None:
 def test_demo_zip_result_names_its_format(tmp_path: Path) -> None:
 	result = build_demo_archive(tmp_path / "demo.zip", megabytes=2)
 	assert result["format"] == "zip"
+
+
+def test_the_default_pattern_is_neutral(tmp_path: Path) -> None:
+	path = tmp_path / "demo.zip"
+	build_demo_archive(path, megabytes=2)
+	with zipfile.ZipFile(path) as archive:
+		assert archive.namelist() == ["motif.txt"]
+
+
+def test_the_cli_default_matches_the_api_default(tmp_path: Path) -> None:
+	import inspect
+
+	from zipguard.__main__ import _build_parser
+
+	args = _build_parser().parse_args(["demo", str(tmp_path / "demo.zip")])
+	expected = inspect.signature(build_demo_archive).parameters["text"].default
+	assert args.text == expected

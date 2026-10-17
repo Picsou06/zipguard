@@ -96,9 +96,34 @@ cat >> "$TMP/full.html" <<HTML
 </body></html>
 HTML
 
-"$CHROME" --headless=new --disable-gpu --no-pdf-header-footer \
-	--virtual-time-budget=4000 \
-	--print-to-pdf="$OUT/ZipGuard-Documentation.pdf" \
-	"file://$TMP/full.html" >/dev/null 2>&1
+PDF="$OUT/ZipGuard-Documentation.pdf"
 
-echo "✅ $OUT/ZipGuard-Documentation.pdf"
+# Un navigateur Windows lancé depuis Git Bash ne comprend pas un chemin de la forme
+# /c/Users/... : il faut le lui traduire, sans quoi il échoue en silence.
+to_browser_path() {
+	case "$CHROME" in
+		*.exe)
+			if command -v cygpath >/dev/null 2>&1; then
+				cygpath -w "$1"
+			else
+				printf '%s' "$1"
+			fi
+			;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+rm -f "$PDF"
+"$CHROME" --headless=new --disable-gpu --no-pdf-header-footer \
+	--virtual-time-budget=6000 \
+	--print-to-pdf="$(to_browser_path "$PDF")" \
+	"file://$(to_browser_path "$TMP/full.html")" 2>/dev/null
+
+# Le navigateur peut rendre 0 sans rien produire, donc la seule preuve est le fichier.
+# Annoncer un succès sans vérifier laisserait un PDF périmé passer pour régénéré.
+[ -s "$PDF" ] || {
+	echo "Le navigateur n'a produit aucun PDF. Relance avec CHROME=/chemin/vers/le/binaire." >&2
+	exit 1
+}
+
+echo "OK $PDF ($(wc -c < "$PDF") octets)"

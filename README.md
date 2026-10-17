@@ -178,7 +178,7 @@ script branché dessus sache quand il doit être relu.
 ### Démonstration bornée (illustrer le ratio, sans danger)
 
 ```bash
-zipguard demo samples/demo.zip --text motif --mb 10
+zipguard demo samples/demo.zip --mb 10
 zipguard demo samples/demo.tar.gz --format tar.gz --mb 10
 ```
 
@@ -414,7 +414,7 @@ La suite, pour qui veut continuer :
 ```bash
 cd zipguard.app
 pip install -r requirements-dev.txt
-pytest -q          # 153 tests
+pytest -q          # 155 tests
 ruff check .       # style et erreurs courantes
 ```
 

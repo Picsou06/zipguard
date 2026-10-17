@@ -98,6 +98,9 @@ def _paint(text: str, *styles: str, enabled: bool = True) -> str:
 	return f"{prefix}{text}{_ANSI['reset']}" if prefix else text
 
 
+paint = _paint
+
+
 def _gauge(value: float, limit: float, glyphs: dict, width: int = GAUGE_WIDTH) -> str:
 	"""
 	Description: Dessine une jauge montrant un ratio face à son seuil.

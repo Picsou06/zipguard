@@ -36,7 +36,9 @@ Une relecture complète a trouvé deux défauts réels, corrigés ici, et le mod
 - `zipguard serve --max-memory-mb` (1000 par défaut) : plafond `RLIMIT_AS` sur chaque
   worker. Une analyse qui l'atteint rend un verdict DANGEREUSE ; un worker qui meurt
   sans verdict donne un `500` au lieu d'une réponse absente.
-- Couverture des tests dans la CI (seuil de 85 %, tableau dans le résumé du job).
+- Couverture des tests dans la CI (seuil de 85 %, tableau dans le résumé du job), et badge
+  de couverture publié dans une branche `badges` à chaque passage sur `main`.
+- Dossier PDF régénéré avec les nouvelles sections.
 - Workflow `release.yml` : publication sur PyPI par étiquette, sans jeton stocké.
 
 ## [2.0.0]

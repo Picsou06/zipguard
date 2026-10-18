@@ -13,6 +13,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Picsou06/zipguard/ci.yml?style=for-the-badge&label=CI&logo=githubactions&logoColor=white)](https://github.com/Picsou06/zipguard/actions)
 ![Stars](https://img.shields.io/github/stars/Picsou06/zipguard?style=for-the-badge&color=86A8E7&logo=github)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPicsou06%2Fzipguard%2Fbadges%2Fcoverage.json&style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Picsou06/zipguard/actions/workflows/ci.yml)
 ![Last commit](https://img.shields.io/github/last-commit/Picsou06/zipguard?style=for-the-badge&color=91EAE4&logo=git&logoColor=white)
 
 <br/><br/>
@@ -440,7 +441,9 @@ ruff check .                      # style et erreurs courantes
 ```
 
 La CI rejoue cette suite sur Python 3.10 à 3.13, exige au moins 85 % de couverture et
-l'affiche dans le résumé du job, vérifie le style, puis construit l'image Docker.
+l'affiche dans le résumé du job, vérifie le style, puis construit l'image Docker. À chaque
+passage sur `main`, le pourcentage est écrit dans la branche `badges`, que lit le badge
+du haut de page : aucun service externe.
 
 ### Publier une version
 
@@ -448,9 +451,11 @@ Le workflow [`release.yml`](.github/workflows/release.yml) publie sur PyPI à ch
 étiquette `vX.Y.Z`, par **publication de confiance** : aucun jeton à stocker. À faire une
 seule fois :
 
-1. Sur PyPI, ajouter un *trusted publisher* GitHub pour ce dépôt : workflow `release.yml`,
-   environnement `pypi`.
-2. Dans les réglages du dépôt, créer l'environnement `pypi`.
+1. Sur PyPI, dans *Your account → Publishing*, ajouter un *pending publisher* GitHub :
+   propriétaire `Picsou06`, dépôt `zipguard`, workflow `release.yml`, environnement `pypi`.
+   Le projet est créé sur PyPI à la première publication.
+2. Côté GitHub, rien à faire : l'environnement `pypi` est créé au premier lancement. On
+   peut ensuite y ajouter une règle d'approbation manuelle avant chaque publication.
 
 Ensuite, monter la version dans `pyproject.toml` et `__init__.py`, puis :
 

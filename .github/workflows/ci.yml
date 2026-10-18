@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Toutes les PR, pas seulement celles qui visent main : une PR empilée sur une autre doit
+  # être vérifiée elle aussi.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

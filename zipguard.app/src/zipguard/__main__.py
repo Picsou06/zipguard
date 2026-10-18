@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -10,9 +11,10 @@ from pathlib import Path
 from . import __version__
 from .bench import bench_json, build_corpus, render_bench, run_bench
 from .demo import FORMATS, build_demo_archive
-from .formats import supported_kinds
-from .limits import Limits, human_bytes
+from .formats import detect_kind, supported_kinds
+from .limits import Limits, Verdict, human_bytes
 from .report import render, render_json
+from .sarif import render_sarif
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
 from .trust import fingerprint, load_allowlist
 
@@ -148,11 +150,29 @@ def _build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--version", action="version", version=f"zipguard {__version__}")
 	sub = parser.add_subparsers(dest="command", required=True)
 
-	scan = sub.add_parser("scan", help="Inspecte une archive et rend un verdict.")
-	scan.add_argument("archive", type=Path)
+	scan = sub.add_parser(
+		"scan",
+		help="Inspecte une ou plusieurs archives, ou tout un dossier, et rend un verdict.",
+	)
+	scan.add_argument(
+		"targets",
+		nargs="+",
+		metavar="ARCHIVE",
+		help="Archive ou dossier ; un dossier est parcouru et chaque archive reconnue est inspectée.",
+	)
 	_add_threshold_flags(scan)
 	_add_trust_flag(scan)
 	_add_render_flags(scan)
+	scan.add_argument(
+		"--sarif",
+		action="store_true",
+		help="Sortie SARIF 2.1.0, pour l'onglet Sécurité de GitHub.",
+	)
+	scan.add_argument(
+		"--exit-zero",
+		action="store_true",
+		help="Rend 0 même si une archive est dangereuse (utile pour publier un rapport en CI).",
+	)
 
 	extract = sub.add_parser("extract", help="Extrait une archive jugée sûre, en comptant les octets.")
 	extract.add_argument("archive", type=Path)
@@ -218,16 +238,85 @@ def _build_parser() -> argparse.ArgumentParser:
 	return parser
 
 
+_SKIPPED_DIRECTORIES = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv"}
+
+
+def _walk_archives(directory: Path) -> list[Path]:
+	"""
+	Description: Liste les archives d'un dossier, reconnues par signature.
+	Usage: _walk_archives(Path(".")).
+	Inputs: directory (Path) dossier à parcourir.
+	Outputs: list[Path] triée des fichiers qui sont des archives.
+
+	Les liens symboliques ne sont pas suivis, et les dossiers de gestion de version ou de
+	dépendances sont sautés : ils ne contiennent pas d'archives à juger, seulement du bruit
+	et du temps perdu.
+	"""
+
+	found: list[Path] = []
+	for current, dirnames, filenames in os.walk(directory, followlinks=False):
+		dirnames[:] = sorted(name for name in dirnames if name not in _SKIPPED_DIRECTORIES)
+		for name in sorted(filenames):
+			candidate = Path(current) / name
+			if candidate.is_symlink() or not candidate.is_file():
+				continue
+			try:
+				if detect_kind(candidate) is not None:
+					found.append(candidate)
+			except OSError:
+				continue
+	return found
+
+
+def _display_path(path: Path) -> str:
+	"""
+	Description: Chemin affiché et rapporté, relatif au dossier courant quand c'est possible.
+	Usage: _display_path(Path("/depot/lib/a.zip")).
+	Inputs: path (Path) chemin.
+	Outputs: str en séparateurs /, comme l'attend SARIF.
+	"""
+
+	try:
+		return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+	except ValueError:
+		return path.as_posix()
+
+
+def _collect_targets(raw_targets: list[str]) -> list[tuple[str, object]] | None:
+	"""
+	Description: Transforme les arguments de scan en couples (nom affiché, cible inspectable).
+	Usage: targets = _collect_targets(args.targets).
+	Inputs: raw_targets (list[str]) arguments tels que tapés.
+	Outputs: list des couples, ou None si un argument n'existe pas.
+	"""
+
+	targets: list[tuple[str, object]] = []
+	for raw in raw_targets:
+		path = Path(raw)
+		if path.is_dir():
+			targets.extend((_display_path(found), found) for found in _walk_archives(path))
+		elif path.exists():
+			targets.append((raw if not path.is_absolute() else path.as_posix(), path))
+		else:
+			print(f"zipguard: archive introuvable : {raw}", file=sys.stderr)
+			return None
+	return targets
+
+
 def _command_scan(args: argparse.Namespace) -> int:
 	"""
 	Description: Exécute la sous commande scan.
 	Usage: interne à main.
 	Inputs: args (Namespace) options analysées.
 	Outputs: int code de sortie.
+
+	Avec une seule archive, les sorties texte et JSON sont inchangées. Avec plusieurs, le
+	texte enchaîne les rapports et le JSON devient une liste des mêmes objets. Le code de
+	sortie vaut 1 dès qu'une seule archive est dangereuse.
 	"""
 
-	if not args.archive.exists():
-		print(f"zipguard: archive introuvable : {args.archive}", file=sys.stderr)
+	targets = _collect_targets(args.targets)
+	if targets is None:
 		return EXIT_ERROR
 
 	trusted = _trusted_from(args)
@@ -235,14 +324,25 @@ def _command_scan(args: argparse.Namespace) -> int:
 		return EXIT_USAGE
 
 	limits = _limits_from(args)
-	verdict = Scanner(limits, trusted=trusted).inspect(args.archive)
+	scanner = Scanner(limits, trusted=trusted)
+	results: list[tuple[str, Verdict]] = [(name, scanner.inspect(target)) for name, target in targets]
 
-	if args.json:
-		print(render_json(str(args.archive), verdict, limits=limits, indent=2))
+	if args.sarif:
+		print(render_sarif(results))
+	elif args.json:
+		documents = [json.loads(render_json(name, verdict, limits=limits)) for name, verdict in results]
+		single = len(args.targets) == 1 and not Path(args.targets[0]).is_dir()
+		payload = documents[0] if single else documents
+		print(json.dumps(payload, ensure_ascii=False, indent=2))
 	else:
-		print(render(str(args.archive), verdict, limits=limits, **_render_options(args)))
+		if not results:
+			print("\n  Aucune archive trouvée.\n")
+		for name, verdict in results:
+			print(render(name, verdict, limits=limits, **_render_options(args)))
 
-	return EXIT_OK if verdict.safe else EXIT_UNSAFE
+	if args.exit_zero:
+		return EXIT_OK
+	return EXIT_OK if all(verdict.safe for _, verdict in results) else EXIT_UNSAFE
 
 
 def _command_extract(args: argparse.Namespace) -> int:

@@ -80,8 +80,10 @@ runs:
         read -r -a extra <<< "$ZG_ARGS"
         # La forme ${tableau[@]+...} évite l'erreur « unbound variable » de bash 3 (macOS)
         # quand le tableau est vide sous set -u.
-        zipguard scan "$ZG_PATH" --sarif ${options[@]+"${options[@]}"} ${extra[@]+"${extra[@]}"} > "$ZG_SARIF"
-        status=$?
+        # GitHub lance ce script avec bash -e : le code 1 (archive dangereuse) l'arrêterait
+        # avant d'écrire les sorties. On le recueille donc sans laisser -e réagir.
+        status=0
+        zipguard scan "$ZG_PATH" --sarif ${options[@]+"${options[@]}"} ${extra[@]+"${extra[@]}"} > "$ZG_SARIF" || status=$?
         if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
           echo "::error::zipguard a échoué (code $status)."
           exit "$status"

@@ -129,7 +129,7 @@ sortie vaut `1`.
 
 | Commande | Ce qu'elle fait |
 | :-- | :-- |
-| `zipguard scan CIBLE...` | Inspecte une archive, plusieurs, un dossier entier ou une URL, sans rien écrire sur le disque |
+| `zipguard scan CIBLE...` | Inspecte une archive, plusieurs, un dossier entier, une URL ou l'entrée standard (`-`), sans rien écrire sur le disque |
 | `zipguard extract ARCHIVE DEST` | Extrait une archive jugée sûre, en recomptant chaque octet |
 | `zipguard demo FICHIER` | Fabrique une démonstration bornée, en `zip` ou `tar.gz` |
 | `zipguard serve` | Expose le scanner en petit service HTTP local |
@@ -191,6 +191,38 @@ Chaque raison porte un **code stable** dans `codes`, dans le même ordre : `rati
 `nested_cut`, `depth`, `nested_budget`, `download_cap`, `memory`, `unreadable`,
 `unsupported`. Les phrases sont faites pour être lues et peuvent changer ; les codes sont
 faits pour être triés par une machine.
+
+### L'action GitHub, en une ligne
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  zipguard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Picsou06/zipguard@v2.2.0
+```
+
+L'action installe ZipGuard depuis sa propre étiquette (sans dépendre de PyPI), parcourt le
+dépôt, et publie les refus dans l'onglet Sécurité. Le résumé du job dit combien d'archives
+ont été refusées.
+
+| Entrée | Défaut | Rôle |
+| :-- | :-- | :-- |
+| `path` | `.` | Dossier ou archive à inspecter |
+| `upload` | `true` | Publier le rapport dans l'onglet Sécurité |
+| `fail-on-findings` | `false` | Faire échouer le job si une archive est dangereuse |
+| `trust` | — | Liste d'empreintes de confiance |
+| `args` | — | Options passées à `zipguard scan`, par exemple `--max-ratio 50` |
+| `sarif-file` | `zipguard.sarif` | Chemin du rapport produit |
+
+Sorties : `findings` (nombre de refus), `unsafe` (`true` ou `false`), `sarif-file`. Les
+entrées passent au script par l'environnement, jamais par interpolation : une valeur
+contenant `$(...)` reste une valeur. La CI du dépôt teste l'action elle même.
 
 ### Les refus dans l'onglet Sécurité de GitHub (SARIF)
 
@@ -257,6 +289,9 @@ imbriquées, est jugée en moins d'une seconde après 3,5 Mio téléchargés.
 | `--max-download-mb` | 200 | Coupe toute lecture au delà, et devient la raison du refus |
 | `--max-buffer-mb` | 64 | Mémoire accordée à une archive imbriquée lue sans disque |
 | `--remote-timeout` | 30 s | Délai de chaque requête |
+
+Avec `-`, l'archive est lue sur l'entrée standard, en mémoire, sous le même plafond de
+téléchargement : `curl -s https://exemple.org/a.tar.gz | zipguard scan -`.
 
 Un `tar` ou un flux compressé distant est lu dans l'ordre, derrière les mêmes plafonds.
 Sont refusés, avec une raison claire : un serveur qui n'annonce pas la taille du fichier
@@ -566,9 +601,8 @@ Les cinq pistes de la version 2 sont livrées à leur tour dans la 2.2 :
 
 La suite, pour qui veut continuer :
 
-- 🟢 **Action GitHub prête à l'emploi** (`uses: Picsou06/zipguard@v2`) qui scanne le dépôt
-  et publie le SARIF en une ligne.
-- 🟡 **Inspection en flux pour `scan -`**, une archive lue sur l'entrée standard.
+- ✅ ~~Action GitHub prête à l'emploi~~ : livrée (`uses: Picsou06/zipguard@v2.2.0`).
+- ✅ ~~`scan -`, une archive lue sur l'entrée standard~~ : livré.
 - 🟡 **Liste blanche seccomp** générée en traçant les appels réels du worker, plus stricte
   que la liste de refus actuelle.
 - 🔴 **Formats `rar` et `zstd`**, derrière le même adaptateur et les mêmes seuils.

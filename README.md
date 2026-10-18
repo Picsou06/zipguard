@@ -447,6 +447,19 @@ du haut de page : aucun service externe.
 
 ### Publier une version
 
+[PyPI](https://pypi.org) est l'index officiel des paquets Python : c'est là que `pip` va
+chercher ce qu'on lui demande d'installer. Une fois publié, ZipGuard s'installe sans
+cloner le dépôt :
+
+```bash
+pip install zipguard
+pip install "zipguard[7z]"   # avec le support 7z
+```
+
+La page PyPI affiche les deux auteurs déclarés dans `pyproject.toml`, avec leur adresse.
+Après la première publication, celui qui a créé le projet sur PyPI ajoute l'autre comme
+*Owner* (*Manage → Collaborators*), pour que les deux puissent gérer les versions.
+
 Le workflow [`release.yml`](.github/workflows/release.yml) publie sur PyPI à chaque
 étiquette `vX.Y.Z`, par **publication de confiance** : aucun jeton à stocker. À faire une
 seule fois :

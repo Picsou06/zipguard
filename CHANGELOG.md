@@ -40,6 +40,7 @@ Une relecture complète a trouvé deux défauts réels, corrigés ici, et le mod
   de couverture publié dans une branche `badges` à chaque passage sur `main`.
 - Dossier PDF régénéré avec les nouvelles sections.
 - Workflow `release.yml` : publication sur PyPI par étiquette, sans jeton stocké.
+- Adresses des deux auteurs dans `pyproject.toml`, affichées sur la page PyPI.
 
 ## [2.0.0]
 

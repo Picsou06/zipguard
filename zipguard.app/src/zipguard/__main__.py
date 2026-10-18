@@ -13,6 +13,7 @@ from .bench import bench_json, build_corpus, render_bench, run_bench
 from .demo import FORMATS, build_demo_archive
 from .formats import detect_kind, supported_kinds
 from .limits import Limits, Verdict, human_bytes
+from .remote import RemoteSource, is_url
 from .report import render, render_json
 from .sarif import render_sarif
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
@@ -107,6 +108,8 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 	defaults = Limits()
 	extract_mb = getattr(args, "max_extract_mb", None)
 	free_mb = getattr(args, "min_free_mb", None)
+	buffer_mb = getattr(args, "max_buffer_mb", None)
+	download_mb = getattr(args, "max_download_mb", None)
 
 	return Limits(
 		max_total_bytes=args.max_total_mb * 1_000_000,
@@ -116,6 +119,10 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 		max_depth=args.max_depth,
 		max_extract_bytes=(defaults.max_extract_bytes if extract_mb is None else extract_mb * 1_000_000),
 		min_free_bytes=(defaults.min_free_bytes if free_mb is None else free_mb * 1_000_000),
+		max_buffer_bytes=(defaults.max_buffer_bytes if buffer_mb is None else buffer_mb * 1_000_000),
+		max_download_bytes=(
+			defaults.max_download_bytes if download_mb is None else download_mb * 1_000_000
+		),
 	)
 
 
@@ -158,7 +165,10 @@ def _build_parser() -> argparse.ArgumentParser:
 		"targets",
 		nargs="+",
 		metavar="ARCHIVE",
-		help="Archive ou dossier ; un dossier est parcouru et chaque archive reconnue est inspectée.",
+		help=(
+			"Archive, dossier ou adresse http(s). Un dossier est parcouru et chaque archive "
+			"reconnue est inspectée ; une adresse est lue sans rien écrire sur le disque."
+		),
 	)
 	_add_threshold_flags(scan)
 	_add_trust_flag(scan)
@@ -167,6 +177,25 @@ def _build_parser() -> argparse.ArgumentParser:
 		"--sarif",
 		action="store_true",
 		help="Sortie SARIF 2.1.0, pour l'onglet Sécurité de GitHub.",
+	)
+	defaults = Limits()
+	scan.add_argument(
+		"--max-download-mb",
+		type=int,
+		default=defaults.max_download_bytes // 1_000_000,
+		help="Plafond de téléchargement pour une archive distante.",
+	)
+	scan.add_argument(
+		"--max-buffer-mb",
+		type=int,
+		default=defaults.max_buffer_bytes // 1_000_000,
+		help="Mémoire accordée à chaque archive imbriquée lue sans disque.",
+	)
+	scan.add_argument(
+		"--remote-timeout",
+		type=float,
+		default=30.0,
+		help="Délai de chaque requête vers une archive distante, en secondes.",
 	)
 	scan.add_argument(
 		"--exit-zero",
@@ -282,16 +311,28 @@ def _display_path(path: Path) -> str:
 		return path.as_posix()
 
 
-def _collect_targets(raw_targets: list[str]) -> list[tuple[str, object]] | None:
+def _collect_targets(
+	raw_targets: list[str],
+	limits: Limits,
+	timeout: float,
+) -> list[tuple[str, object]] | None:
 	"""
 	Description: Transforme les arguments de scan en couples (nom affiché, cible inspectable).
-	Usage: targets = _collect_targets(args.targets).
-	Inputs: raw_targets (list[str]) arguments tels que tapés.
-	Outputs: list des couples, ou None si un argument n'existe pas.
+	Usage: targets = _collect_targets(args.targets, limits, 30.0).
+	Inputs: raw_targets (list[str]) arguments tels que tapés, limits (Limits) pour le plafond de téléchargement, timeout (float) délai réseau.
+	Outputs: list des couples, ou None si un argument n'existe pas ou ne répond pas.
 	"""
 
 	targets: list[tuple[str, object]] = []
 	for raw in raw_targets:
+		if is_url(raw):
+			try:
+				source = RemoteSource(raw, max_download_bytes=limits.max_download_bytes, timeout=timeout)
+			except (OSError, ValueError) as error:
+				print(f"zipguard: archive distante injoignable : {raw} ({error})", file=sys.stderr)
+				return None
+			targets.append((raw, source))
+			continue
 		path = Path(raw)
 		if path.is_dir():
 			targets.extend((_display_path(found), found) for found in _walk_archives(path))
@@ -315,15 +356,15 @@ def _command_scan(args: argparse.Namespace) -> int:
 	sortie vaut 1 dès qu'une seule archive est dangereuse.
 	"""
 
-	targets = _collect_targets(args.targets)
-	if targets is None:
-		return EXIT_ERROR
-
 	trusted = _trusted_from(args)
 	if trusted is None:
 		return EXIT_USAGE
 
 	limits = _limits_from(args)
+	targets = _collect_targets(args.targets, limits, args.remote_timeout)
+	if targets is None:
+		return EXIT_ERROR
+
 	scanner = Scanner(limits, trusted=trusted)
 	results: list[tuple[str, Verdict]] = [(name, scanner.inspect(target)) for name, target in targets]
 
@@ -331,7 +372,9 @@ def _command_scan(args: argparse.Namespace) -> int:
 		print(render_sarif(results))
 	elif args.json:
 		documents = [json.loads(render_json(name, verdict, limits=limits)) for name, verdict in results]
-		single = len(args.targets) == 1 and not Path(args.targets[0]).is_dir()
+		single = len(args.targets) == 1 and (
+			is_url(args.targets[0]) or not Path(args.targets[0]).is_dir()
+		)
 		payload = documents[0] if single else documents
 		print(json.dumps(payload, ensure_ascii=False, indent=2))
 	else:

@@ -244,6 +244,21 @@ def _build_parser() -> argparse.ArgumentParser:
 		help="Plafond mémoire de chaque worker, 0 pour aucun (Linux et macOS).",
 	)
 	serve.add_argument(
+		"--sandbox",
+		choices=("auto", "strict", "off"),
+		default="auto",
+		help=(
+			"Bac à sable du worker : auto pose ce que le système permet, strict refuse "
+			"d'analyser s'il manque un élément, off ne pose rien."
+		),
+	)
+	serve.add_argument(
+		"--cgroup-root",
+		default=None,
+		metavar="DOSSIER",
+		help="Cgroup v2 délégué où créer un cgroup jetable par worker.",
+	)
+	serve.add_argument(
 		"--no-isolate",
 		action="store_true",
 		help="Analyse dans le processus du serveur au lieu d'un worker jetable.",
@@ -494,6 +509,8 @@ def _command_serve(args: argparse.Namespace) -> int:
 	serve(
 		limits=_limits_from(args),
 		trusted=trusted,
+		sandbox=args.sandbox,
+		cgroup_root=args.cgroup_root,
 		host=args.host,
 		port=args.port,
 		max_upload_bytes=args.max_upload_mb * 1_000_000,

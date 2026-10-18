@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing
 import shutil
 import tempfile
@@ -10,6 +11,13 @@ from pathlib import Path
 
 from .limits import Limits, Verdict
 from .report import SCHEMA_VERSION
+from .sandbox import (
+	CgroupJail,
+	SandboxConfig,
+	apply_memory_limit,
+	apply_sandbox,
+	seccomp_supported,
+)
 from .scanner import Scanner
 
 DEFAULT_HOST = "127.0.0.1"
@@ -39,53 +47,32 @@ class WorkerFailed(RuntimeError):
 	"""
 
 
-def apply_memory_limit(max_bytes: int) -> bool:
-	"""
-	Description: Plafonne l'espace d'adressage du processus courant, là où le système le permet.
-	Usage: appelée en tête du worker, jamais dans le serveur lui même.
-	Inputs: max_bytes (int) plafond en octets, 0 pour ne rien limiter.
-	Outputs: bool vrai si le plafond a été posé.
-
-	Le délai coupe une analyse trop longue, pas une analyse trop gourmande : sans plafond,
-	une archive qui fait gonfler la mémoire peut faire tuer bien plus que son worker par le
-	système. Avec, l'allocation fautive échoue en MemoryError dans le worker seul.
-	"""
-
-	if max_bytes <= 0:
-		return False
-	try:
-		import resource
-	except ImportError:  # pragma: no cover - Windows n'a pas de module resource
-		return False
-	try:
-		_, hard = resource.getrlimit(resource.RLIMIT_AS)
-		ceiling = max_bytes if hard == resource.RLIM_INFINITY else min(max_bytes, hard)
-		resource.setrlimit(resource.RLIMIT_AS, (ceiling, hard))
-	except (ValueError, OSError):  # pragma: no cover - dépend du système
-		return False
-	return True
-
-
 def _worker(
 	path: str,
 	limits: dict,
 	pipe,
 	max_memory_bytes: int = 0,
 	trusted: tuple[str, ...] = (),
+	sandbox: dict | None = None,
+	cgroup: str | None = None,
 ) -> None:
 	"""
 	Description: Analyse une archive dans un processus séparé et renvoie le verdict par le tube.
 	Usage: cible interne de multiprocessing, jamais appelée directement.
-	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire, 0 pour aucun, trusted (tuple[str, ...]) empreintes de confiance.
-	Outputs: None, le verdict part dans le tube.
+	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire sans bac à sable, trusted (tuple[str, ...]) empreintes de confiance, sandbox (dict | None) SandboxConfig sérialisée, cgroup (str | None) cgroup à rejoindre.
+	Outputs: None, le verdict et le rapport du bac à sable partent dans le tube.
 
-	Doit rester au niveau du module pour être picklable avec la méthode spawn. Une archive
-	qui épuise la mémoire autorisée est un signal en soi : elle reçoit un verdict dangereux
-	plutôt qu'une erreur.
+	Doit rester au niveau du module pour être picklable avec la méthode spawn. Le bac à
+	sable est posé avant que le moindre octet de l'archive soit lu. Une archive qui épuise
+	la mémoire autorisée est un signal en soi : elle reçoit un verdict dangereux plutôt
+	qu'une erreur.
 	"""
 
 	try:
-		apply_memory_limit(max_memory_bytes)
+		if sandbox is not None:
+			report = apply_sandbox(SandboxConfig(**sandbox), cgroup)
+		else:
+			report = {"mode": "memory", "rlimits": {"memory": apply_memory_limit(max_memory_bytes)}}
 		try:
 			verdict = Scanner(Limits(**limits), trusted=trusted).inspect(Path(path))
 		except MemoryError:
@@ -94,9 +81,9 @@ def _worker(
 				"memory",
 				"Mémoire épuisée pendant l'analyse : l'archive dépasse le plafond du worker.",
 			)
-		pipe.send(("ok", verdict.as_dict()))
+		pipe.send(("ok", verdict.as_dict(), report))
 	except BaseException as error:  # pragma: no cover - filet de sécurité du worker
-		pipe.send(("error", f"{type(error).__name__}: {error}"))
+		pipe.send(("error", f"{type(error).__name__}: {error}", {}))
 	finally:
 		pipe.close()
 
@@ -124,46 +111,110 @@ def scan_in_worker(
 	timeout: float = DEFAULT_TIMEOUT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
 	trusted: frozenset[str] = frozenset(),
+	sandbox: SandboxConfig | None = None,
 ) -> Verdict:
 	"""
 	Description: Analyse une archive dans un processus jetable, tué net au bout du délai.
 	Usage: scan_in_worker(Path("suspect.zip"), Limits(), timeout=30).
-	Inputs: path (Path) archive, limits (Limits) seuils, timeout (float) délai en secondes, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun, trusted (frozenset[str]) empreintes de confiance.
+	Inputs: identiques à scan_in_worker_report.
 	Outputs: Verdict de l'analyse.
+	"""
+
+	verdict, _ = scan_in_worker_report(path, limits, timeout, max_memory_bytes, trusted, sandbox)
+	return verdict
+
+
+def scan_in_worker_report(
+	path: Path,
+	limits: Limits,
+	timeout: float = DEFAULT_TIMEOUT,
+	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
+	trusted: frozenset[str] = frozenset(),
+	sandbox: SandboxConfig | None = None,
+) -> tuple[Verdict, dict]:
+	"""
+	Description: Analyse une archive dans un processus jetable et rapporte le bac à sable posé.
+	Usage: verdict, report = scan_in_worker_report(Path("a.zip"), Limits(), sandbox=SandboxConfig()).
+	Inputs: path (Path) archive, limits (Limits) seuils, timeout (float) délai en secondes, max_memory_bytes (int) plafond mémoire quand sandbox est None, trusted (frozenset[str]) empreintes de confiance, sandbox (SandboxConfig | None) bac à sable complet.
+	Outputs: tuple (Verdict, dict décrivant le bac à sable réellement en place).
 
 	Un serveur qui analyse des archives inconnues dans son propre processus se fait tuer
 	par la première qui épuise la mémoire ou tourne trop longtemps. Le travail part donc
 	dans un processus séparé dont le serveur peut se débarrasser, ce qui plafonne le dégât
 	d'une archive pathologique à un worker perdu.
+
+	Le tube est lu avant d'attendre la fin du worker : un verdict plus gros que le tampon du
+	tube bloquerait sinon le worker sur son écriture, et l'analyse passerait à tort pour un
+	délai dépassé.
 	"""
 
+	jail, jail_error = _open_jail(sandbox)
 	context = multiprocessing.get_context("spawn")
 	parent, child = context.Pipe(duplex=False)
 	process = context.Process(
 		target=_worker,
-		args=(str(path), limits.as_dict(), child, max_memory_bytes, tuple(sorted(trusted))),
+		args=(
+			str(path),
+			limits.as_dict(),
+			child,
+			max_memory_bytes,
+			tuple(sorted(trusted)),
+			None if sandbox is None else sandbox.as_dict(),
+			None if jail is None else str(jail.path),
+		),
 	)
 	process.start()
 	child.close()
 
 	try:
-		process.join(timeout)
-		if process.is_alive():
+		if not parent.poll(timeout):
+			if jail is not None:
+				jail.kill()
 			process.terminate()
 			process.join(5)
 			raise ScanTimeout(f"Analyse interrompue après {timeout} s.")
 
-		if not parent.poll():
-			raise WorkerFailed(f"Le worker s'est arrêté sans rendre de verdict (code {process.exitcode}).")
+		try:
+			status, payload, report = parent.recv()
+		except EOFError as error:
+			process.join(5)
+			raise WorkerFailed(
+				f"Le worker s'est arrêté sans rendre de verdict (code {process.exitcode})."
+			) from error
+		process.join(5)
 
-		status, payload = parent.recv()
-		if status == "error":  # pragma: no cover - dépend d'une panne du worker
+		if status == "error":
 			raise WorkerFailed(payload)
-		return _verdict_from_dict(payload)
+		if jail_error is not None:
+			report = {**report, "cgroup": False, "cgroup_error": jail_error}
+		return _verdict_from_dict(payload), report
 	finally:
 		parent.close()
 		if process.is_alive():  # pragma: no cover - nettoyage best effort
 			process.kill()
+			process.join(5)
+		if jail is not None:
+			jail.remove()
+
+
+def _open_jail(sandbox: SandboxConfig | None) -> tuple[CgroupJail | None, str | None]:
+	"""
+	Description: Crée le cgroup du prochain worker, si la configuration en demande un.
+	Usage: interne à scan_in_worker_report.
+	Inputs: sandbox (SandboxConfig | None).
+	Outputs: tuple (cgroup créé ou None, raison de l'échec ou None).
+
+	En mode strict, un cgroup impossible à créer arrête l'analyse avant qu'elle commence.
+	"""
+
+	if sandbox is None or sandbox.mode == "off" or not sandbox.cgroup_root:
+		return None, None
+	try:
+		return CgroupJail(Path(sandbox.cgroup_root), sandbox.max_memory_bytes, sandbox.pids_max), None
+	except OSError as error:
+		if sandbox.mode == "strict":
+			raise WorkerFailed(f"Bac à sable incomplet en mode strict : cgroup ({error}).") from error
+		return None, str(error)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -179,6 +230,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 	limits: Limits = Limits()
 	trusted: frozenset[str] = frozenset()
+	sandbox: SandboxConfig | None = None
 	max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
 	timeout_seconds: float = DEFAULT_TIMEOUT
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES
@@ -214,11 +266,29 @@ class _Handler(BaseHTTPRequestHandler):
 		from . import __version__
 
 		if self.path == "/health":
-			self._send(200, {"status": "ok", "version": __version__})
+			self._send(200, {"status": "ok", "version": __version__, "sandbox": self._sandbox_summary()})
 		elif self.path == "/limits":
 			self._send(200, {**self.limits.as_dict(), "trusted_fingerprints": len(self.trusted)})
 		else:
 			self._send(404, {"error": "Route inconnue.", "routes": ["/health", "/limits", "/scan"]})
+
+	def _sandbox_summary(self) -> dict:
+		"""
+		Description: Décrit le bac à sable configuré, pour /health.
+		Usage: interne.
+		Inputs: aucun.
+		Outputs: dict mode, seccomp disponible, cgroup délégué.
+		"""
+
+		if not self.isolate:
+			return {"mode": "aucun", "detail": "analyse dans le processus du serveur (--no-isolate)"}
+		if self.sandbox is None:
+			return {"mode": "memory"}
+		return {
+			"mode": self.sandbox.mode,
+			"seccomp_supported": seccomp_supported(),
+			"cgroup_root": self.sandbox.cgroup_root,
+		}
 
 	def do_POST(self) -> None:
 		if self.path != "/scan":
@@ -295,14 +365,16 @@ class _Handler(BaseHTTPRequestHandler):
 				self.close_connection = True
 				return 400, {"error": "Corps tronqué.", "expected_bytes": length, "received_bytes": read}
 
+			extra: dict = {}
 			try:
 				if self.isolate:
-					verdict = scan_in_worker(
+					verdict, extra["sandbox"] = scan_in_worker_report(
 						target,
 						self.limits,
 						self.timeout_seconds,
 						self.max_memory_bytes,
 						self.trusted,
+						self.sandbox,
 					)
 				else:
 					verdict = Scanner(self.limits, trusted=self.trusted).inspect(target)
@@ -317,6 +389,7 @@ class _Handler(BaseHTTPRequestHandler):
 				"version": __version__,
 				"archive": "envoi",
 				**verdict.as_dict(),
+				**extra,
 			}
 		finally:
 			shutil.rmtree(workdir, ignore_errors=True)
@@ -334,22 +407,35 @@ def build_server(
 	max_concurrent: int = DEFAULT_MAX_CONCURRENT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
 	trusted: frozenset[str] = frozenset(),
+	sandbox: str = "auto",
+	cgroup_root: str | None = None,
 ) -> ThreadingHTTPServer:
 	"""
 	Description: Construit le serveur d'analyse sans le démarrer.
 	Usage: build_server(Limits(), port=8723).serve_forever().
-	Inputs: limits (Limits) seuils, host (str) interface, port (int) port, max_upload_bytes (int) plafond d'envoi, timeout (float) délai du worker, isolate (bool) analyse en processus séparé, quiet (bool) journal muet, read_timeout (float) délai de chaque lecture réseau, max_concurrent (int) envois traités en même temps, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun, trusted (frozenset[str]) empreintes de confiance.
+	Inputs: limits (Limits) seuils, host (str) interface, port (int) port, max_upload_bytes (int) plafond d'envoi, timeout (float) délai du worker, isolate (bool) analyse en processus séparé, quiet (bool) journal muet, read_timeout (float) délai de chaque lecture réseau, max_concurrent (int) envois traités en même temps, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun, trusted (frozenset[str]) empreintes de confiance, sandbox (str) auto, strict ou off, cgroup_root (str | None) cgroup v2 délégué.
 	Outputs: ThreadingHTTPServer prêt à servir.
 
 	L'écoute est volontairement sur la boucle locale par défaut : un service qui déballe des
 	archives inconnues ne s'expose pas au réseau sans que quelqu'un l'ait décidé.
 	"""
 
+	limits = limits or Limits()
+	sandbox_config = SandboxConfig(
+		mode=sandbox,
+		max_memory_bytes=max_memory_bytes,
+		# Le délai mur reste le garde fou principal ; le plafond de temps processeur rattrape
+		# un worker qui échapperait à terminate, une seconde après.
+		cpu_seconds=math.ceil(timeout) + 1 if timeout > 0 else 0,
+		# Le worker n'écrit que des copies d'archives imbriquées, plafonnées par ces seuils.
+		max_file_bytes=min(limits.max_entry_bytes, limits.max_total_bytes) + 1_000_000,
+		cgroup_root=cgroup_root,
+	)
 	handler = type(
 		"_ConfiguredHandler",
 		(_Handler,),
 		{
-			"limits": limits or Limits(),
+			"limits": limits,
 			"max_upload_bytes": max_upload_bytes,
 			"timeout_seconds": timeout,
 			"isolate": isolate,
@@ -358,6 +444,7 @@ def build_server(
 			"slots": threading.BoundedSemaphore(max(1, max_concurrent)),
 			"max_memory_bytes": max_memory_bytes,
 			"trusted": frozenset(trusted),
+			"sandbox": sandbox_config,
 		},
 	)
 	return ThreadingHTTPServer((host, port), handler)
@@ -374,6 +461,8 @@ def serve(
 	max_concurrent: int = DEFAULT_MAX_CONCURRENT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
 	trusted: frozenset[str] = frozenset(),
+	sandbox: str = "auto",
+	cgroup_root: str | None = None,
 ) -> None:
 	"""
 	Description: Démarre le serveur et sert jusqu'à l'interruption au clavier.
@@ -394,12 +483,16 @@ def serve(
 		max_concurrent=max_concurrent,
 		max_memory_bytes=max_memory_bytes,
 		trusted=trusted,
+		sandbox=sandbox,
+		cgroup_root=cgroup_root,
 	)
 	bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
 	print(f"ZipGuard écoute sur http://{bound_host}:{bound_port}")
 	print("  GET  /health   état du service")
 	print("  GET  /limits   seuils appliqués")
 	print("  POST /scan     archive en octets bruts, verdict en JSON")
+	if isolate:
+		print(f"  bac à sable    {sandbox}" + (f", cgroup sous {cgroup_root}" if cgroup_root else ""))
 	try:
 		httpd.serve_forever()
 	except KeyboardInterrupt:

@@ -17,6 +17,7 @@ from .remote import RemoteSource, is_url, redact_url
 from .report import printable, render, render_json
 from .sarif import render_sarif
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
+from .sources import MemorySource
 from .trust import fingerprint, load_allowlist
 
 EXIT_OK = 0
@@ -166,8 +167,9 @@ def _build_parser() -> argparse.ArgumentParser:
 		nargs="+",
 		metavar="ARCHIVE",
 		help=(
-			"Archive, dossier ou adresse http(s). Un dossier est parcouru et chaque archive "
-			"reconnue est inspectée ; une adresse est lue sans rien écrire sur le disque."
+			"Archive, dossier, adresse http(s), ou - pour l'entrée standard. Un dossier est "
+			"parcouru et chaque archive reconnue est inspectée ; une adresse ou l'entrée "
+			"standard sont lues sans rien écrire sur le disque."
 		),
 	)
 	_add_threshold_flags(scan)
@@ -332,6 +334,38 @@ def _display_path(path: Path) -> str:
 		return path.as_posix()
 
 
+STDIN_NAME = "<entrée standard>"
+
+
+def _read_stdin(cap: int) -> object:
+	"""
+	Description: Lit une archive sur l'entrée standard, en mémoire, sous un plafond.
+	Usage: target = _read_stdin(limits.max_download_bytes).
+	Inputs: cap (int) plafond d'octets lus.
+	Outputs: MemorySource prête à inspecter, ou Verdict de refus si le plafond est franchi.
+
+	L'entrée standard ne se relit pas et ne se déplace pas : on la recueille d'un trait,
+	sans jamais l'écrire sur le disque, et on s'arrête net au plafond plutôt que de laisser
+	un flux sans fin remplir la mémoire.
+	"""
+
+	stream = sys.stdin.buffer
+	buffer = bytearray()
+	while True:
+		chunk = stream.read(65536)
+		if not chunk:
+			break
+		buffer += chunk
+		if len(buffer) > cap:
+			return Verdict.refused(
+				{"name": STDIN_NAME, "depth": 0, "downloaded_bytes": len(buffer)},
+				"download_cap",
+				f"Entrée standard coupée après {human_bytes(len(buffer))} : elle dépasse le "
+				f"plafond de {human_bytes(cap)}.",
+			)
+	return MemorySource(bytes(buffer), STDIN_NAME)
+
+
 def _collect_targets(
 	raw_targets: list[str],
 	limits: Limits,
@@ -346,7 +380,13 @@ def _collect_targets(
 	"""
 
 	targets: list[tuple[str, object]] = []
+	if raw_targets.count("-") > 1:
+		print("zipguard: l'entrée standard ne peut être lue qu'une fois.", file=sys.stderr)
+		return None
 	for raw in raw_targets:
+		if raw == "-":
+			targets.append(("-", _read_stdin(limits.max_download_bytes)))
+			continue
 		if is_url(raw):
 			try:
 				source = RemoteSource(
@@ -397,15 +437,17 @@ def _command_scan(args: argparse.Namespace) -> int:
 		return EXIT_ERROR
 
 	scanner = Scanner(limits, trusted=trusted)
-	results: list[tuple[str, Verdict]] = [(name, scanner.inspect(target)) for name, target in targets]
+	results: list[tuple[str, Verdict]] = [
+		(name, target if isinstance(target, Verdict) else scanner.inspect(target))
+		for name, target in targets
+	]
 
 	if args.sarif:
 		print(render_sarif(results))
 	elif args.json:
 		documents = [json.loads(render_json(name, verdict, limits=limits)) for name, verdict in results]
-		single = len(args.targets) == 1 and (
-			is_url(args.targets[0]) or not Path(args.targets[0]).is_dir()
-		)
+		first = args.targets[0]
+		single = len(args.targets) == 1 and (first == "-" or is_url(first) or not Path(first).is_dir())
 		payload = documents[0] if single else documents
 		print(json.dumps(payload, ensure_ascii=False, indent=2))
 	else:

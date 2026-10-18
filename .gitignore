@@ -11,3 +11,6 @@ samples/*.zip
 
 # cache des avatars téléchargés par scripts/build-orbit.py
 assets/.avatars/
+.coverage
+htmlcov/
+coverage.xml

@@ -13,6 +13,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Picsou06/zipguard/ci.yml?style=for-the-badge&label=CI&logo=githubactions&logoColor=white)](https://github.com/Picsou06/zipguard/actions)
 ![Stars](https://img.shields.io/github/stars/Picsou06/zipguard?style=for-the-badge&color=86A8E7&logo=github)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FPicsou06%2Fzipguard%2Fbadges%2Fcoverage.json&style=for-the-badge&logo=pytest&logoColor=white)](https://github.com/Picsou06/zipguard/actions/workflows/ci.yml)
 ![Last commit](https://img.shields.io/github/last-commit/Picsou06/zipguard?style=for-the-badge&color=91EAE4&logo=git&logoColor=white)
 
 <br/><br/>
@@ -137,7 +138,8 @@ sortie vaut `1`.
 
 Toutes les commandes d'analyse acceptent `--json`, et les seuils se règlent en ligne de
 commande : `--max-ratio`, `--max-total-mb`, `--max-entry-mb`, `--max-entries`,
-`--max-depth`, plus `--max-extract-mb` et `--min-free-mb` pour l'extraction.
+`--max-depth`, plus `--max-extract-mb`, `--min-free-mb` et `--allow-links` pour
+l'extraction.
 
 ### Codes de sortie
 
@@ -161,7 +163,7 @@ zipguard scan livraison.zip --json | jq '.safe, .reasons'
 {
   "schema_version": 1,
   "tool": "zipguard",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "archive": "livraison.zip",
   "safe": false,
   "verdict": "DANGEREUSE",
@@ -259,12 +261,20 @@ Trois d'entre eux sont nouveaux, et chacun bouche un trou précis :
   archives vides suffirait à monter un déni de service : par le travail, pas par la taille.
 - **`max_extract_bytes` et `min_free_bytes`** s'appliquent pendant l'écriture. Le verdict
   ne suffit pas, parce qu'un manifeste peut mentir : chaque octet écrit est recompté, et
-  un dépassement **efface ce qui venait d'être écrit**.
+  un dépassement **annule toute l'extraction**.
 
-L'extraction valide aussi tous les chemins *avant* la première écriture. Les liens
-symboliques sont refusés dans les deux formats qui savent les porter, et la protection Zip
-Slip traite les trois pièges classiques : chemin absolu, lettre de lecteur Windows,
-remontée par deux points.
+L'extraction est **tout ou rien**. L'archive est d'abord recopiée dans un dossier privé, et
+c'est cette copie qui est inspectée puis extraite : le fichier ne peut plus changer entre
+le verdict et l'écriture. Tout est ensuite écrit dans un dossier de préparation, et rien
+n'arrive dans la destination tant que la dernière entrée n'est pas passée. Un échec ne
+touche donc jamais aux fichiers qui s'y trouvaient déjà.
+
+Tous les chemins sont validés *avant* la première écriture : la protection Zip Slip traite
+les trois pièges classiques (chemin absolu, lettre de lecteur Windows, remontée par deux
+points), les entrées en double sont refusées, tout comme un fichier qui prendrait la place
+d'un dossier existant. Les liens symboliques sont refusés par défaut ; avec
+`--allow-links`, seuls ceux dont la cible descend sous leur propre dossier, sans `..` ni
+chemin absolu, sont recréés. Les liens physiques ne le sont jamais.
 
 Détails et justifications dans [docs/02-prevention.md](docs/02-prevention.md).
 
@@ -292,6 +302,17 @@ L'écoute est sur la **boucle locale par défaut**, pas sur toutes les interface
 pareil ne s'expose pas au réseau sans que quelqu'un l'ait décidé. L'envoi est plafonné et
 refusé sur la seule base de son en tête `Content-Length`, donc avant d'avoir lu un octet,
 et le fichier reçu ne survit jamais à la requête.
+
+Trois garde fous protègent le service lui même :
+
+| Option | Défaut | Contre quoi |
+| :-- | :-- | :-- |
+| `--read-timeout` | 30 s | Un client qui envoie son corps au compte goutte (`408`) |
+| `--max-concurrent` | 4 | Cent envois simultanés, donc cent workers (`503` au delà) |
+| `--max-memory-mb` | 1000 | Une analyse qui fait gonfler la mémoire : verdict DANGEREUSE |
+
+Le plafond mémoire s'appuie sur `RLIMIT_AS` et ne s'applique qu'au worker, sous Linux et
+macOS ; `0` le désactive.
 
 <img src="assets/divider.svg" width="100%" alt="" />
 
@@ -414,12 +435,48 @@ La suite, pour qui veut continuer :
 ```bash
 cd zipguard.app
 pip install -r requirements-dev.txt
-pytest -q          # 155 tests
-ruff check .       # style et erreurs courantes
+pytest -q                         # 190 tests
+pytest -q --cov=zipguard          # avec la couverture
+ruff check .                      # style et erreurs courantes
 ```
 
-La CI rejoue cette suite sur Python 3.10 à 3.13, vérifie le style, puis construit l'image
-Docker.
+La CI rejoue cette suite sur Python 3.10 à 3.13, exige au moins 85 % de couverture et
+l'affiche dans le résumé du job, vérifie le style, puis construit l'image Docker. À chaque
+passage sur `main`, le pourcentage est écrit dans la branche `badges`, que lit le badge
+du haut de page : aucun service externe.
+
+### Publier une version
+
+[PyPI](https://pypi.org) est l'index officiel des paquets Python : c'est là que `pip` va
+chercher ce qu'on lui demande d'installer. Une fois publié, ZipGuard s'installe sans
+cloner le dépôt :
+
+```bash
+pip install zipguard
+pip install "zipguard[7z]"   # avec le support 7z
+```
+
+La page PyPI affiche les deux auteurs déclarés dans `pyproject.toml`, avec leur adresse.
+Après la première publication, celui qui a créé le projet sur PyPI ajoute l'autre comme
+*Owner* (*Manage → Collaborators*), pour que les deux puissent gérer les versions.
+
+Le workflow [`release.yml`](.github/workflows/release.yml) publie sur PyPI à chaque
+étiquette `vX.Y.Z`, par **publication de confiance** : aucun jeton à stocker. À faire une
+seule fois :
+
+1. Sur PyPI, dans *Your account → Publishing*, ajouter un *pending publisher* GitHub :
+   propriétaire `Picsou06`, dépôt `zipguard`, workflow `release.yml`, environnement `pypi`.
+   Le projet est créé sur PyPI à la première publication.
+2. Côté GitHub, rien à faire : l'environnement `pypi` est créé au premier lancement. On
+   peut ensuite y ajouter une règle d'approbation manuelle avant chaque publication.
+
+Ensuite, monter la version dans `pyproject.toml` et `__init__.py`, puis :
+
+```bash
+git tag v2.1.0 && git push origin v2.1.0
+```
+
+Le workflow refuse une étiquette qui ne correspond pas à la version du paquet.
 
 ## 📋 Journal et sécurité
 

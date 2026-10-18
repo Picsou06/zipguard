@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zipguard"
-version = "2.0.0"
+version = "2.1.0"
 description = "Boîte à outils éducative et défensive contre les bombes de décompression."
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "Evan D" }, { name = "Hamza Karrouchi" }]
+authors = [
+	{ name = "Evan D", email = "evan@ecaste.com" },
+	{ name = "Hamza Karrouchi", email = "hamza.karrouchi.dev@gmail.com" },
+]
 keywords = ["security", "zip", "tar", "decompression-bomb", "education", "defense"]
 classifiers = [
 	"Development Status :: 4 - Beta",

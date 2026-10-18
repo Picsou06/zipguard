@@ -67,3 +67,30 @@ def test_a_benign_seven_zip_extracts(tmp_path: Path) -> None:
 	written = Scanner().safe_extract(archive, tmp_path / "out")
 	assert written == 5
 	assert (tmp_path / "out" / "note.txt").read_bytes() == b"salut"
+
+
+def test_a_seven_zip_symlink_yields_a_verdict_not_a_crash(tmp_path: Path) -> None:
+	source = tmp_path / "src"
+	source.mkdir()
+	(source / "lien").symlink_to("/etc/hostname")
+	archive = tmp_path / "lien.7z"
+	with py7zr.SevenZipFile(archive, "w") as handle:
+		handle.write(source / "lien", "lien")
+
+	verdict = Scanner().inspect(archive)
+	assert verdict.stats["links"] == 1
+
+
+def test_a_seven_zip_symlink_is_never_extracted(tmp_path: Path) -> None:
+	from zipguard.scanner import ExtractionRefused
+
+	source = tmp_path / "src"
+	source.mkdir()
+	(source / "lien").symlink_to("/etc/hostname")
+	archive = tmp_path / "lien.7z"
+	with py7zr.SevenZipFile(archive, "w") as handle:
+		handle.write(source / "lien", "lien")
+
+	with pytest.raises(ExtractionRefused):
+		Scanner().safe_extract(archive, tmp_path / "out")
+	assert not (tmp_path / "out").exists()

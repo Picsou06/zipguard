@@ -22,6 +22,8 @@ _TAR_MAGIC = b"ustar"
 _SEVENZIP_MAGIC = b"7z\xbc\xaf\x27\x1c"
 _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
+_LINK_TARGET_MAX = 4096
+
 TAR_KINDS = ("tar", "tar.gz", "tar.bz2", "tar.xz")
 STREAM_KINDS = ("gz", "bz2", "xz")
 
@@ -70,8 +72,12 @@ class Entry:
 	"""
 	Description: Entrée d'archive normalisée, commune à tous les formats pris en charge.
 	Usage: for entry in archive.entries(): print(entry.name, entry.size).
-	Inputs: name (str), size (int) octets décompressés, compressed_size (int) 0 si inconnu, is_dir (bool).
+	Inputs: name (str), size (int) octets décompressés, compressed_size (int) 0 si inconnu, is_dir (bool), is_link (bool), is_hardlink (bool), link_target (str) cible d'un lien tar.
 	Outputs: structure immuable comparable d'un format à l'autre.
+
+	is_link couvre les liens symboliques comme les liens physiques ; is_hardlink distingue
+	les seconds, qui ne sont jamais extraits. La cible d'un lien zip vit dans le contenu de
+	l'entrée et se lit avec Archive.link_target.
 	"""
 
 	name: str
@@ -79,6 +85,8 @@ class Entry:
 	compressed_size: int
 	is_dir: bool = False
 	is_link: bool = False
+	is_hardlink: bool = False
+	link_target: str = ""
 
 	@property
 	def ratio(self) -> float:
@@ -312,6 +320,16 @@ class Archive:
 			with contextlib.suppress(Exception):
 				stream.close()
 
+	def link_target(self, entry: Entry) -> str:
+		"""
+		Description: Rend la cible d'un lien symbolique, telle qu'elle est écrite dans l'archive.
+		Usage: handle.link_target(entry).
+		Inputs: entry (Entry) entrée marquée is_link.
+		Outputs: str cible brute, à valider par l'appelant avant tout usage.
+		"""
+
+		return entry.link_target
+
 	def close(self) -> None:
 		"""
 		Description: Libère les ressources ouvertes par l'adaptateur.
@@ -401,6 +419,23 @@ class ZipArchive(Archive):
 			warnings.simplefilter("ignore", UserWarning)
 			return self._zip.open(entry.name)
 
+	def link_target(self, entry: Entry) -> str:
+		"""
+		Description: Lit la cible d'un lien zip, stockée comme contenu de l'entrée.
+		Usage: handle.link_target(entry).
+		Inputs: entry (Entry) entrée marquée is_link.
+		Outputs: str cible décodée en UTF-8.
+
+		La lecture est plafonnée : une cible plus longue qu'un chemin raisonnable n'en est
+		pas une, et lève ValueError plutôt que d'être lue en entier.
+		"""
+
+		with self.open(entry) as stream:
+			raw = stream.read(_LINK_TARGET_MAX + 1)
+		if len(raw) > _LINK_TARGET_MAX:
+			raise ValueError(f"Cible de lien trop longue : {entry.name}")
+		return raw.decode("utf-8")
+
 	def close(self) -> None:
 		self._zip.close()
 
@@ -449,6 +484,8 @@ class TarArchive(Archive):
 							compressed_size=0,
 							is_dir=member.isdir(),
 							is_link=member.issym() or member.islnk(),
+							is_hardlink=member.islnk(),
+							link_target=member.linkname if member.issym() else "",
 						)
 					)
 					if member.isfile() and member.size:
@@ -583,6 +620,7 @@ class SevenZipArchive(Archive):
 					size=int(getattr(info, "uncompressed", 0) or 0),
 					compressed_size=int(getattr(info, "compressed", 0) or 0),
 					is_dir=bool(getattr(info, "is_directory", False)),
+					is_link=bool(getattr(info, "is_symlink", False)),
 				)
 			)
 		return entries
@@ -595,7 +633,12 @@ class SevenZipArchive(Archive):
 		self._workdirs.append(workdir)
 
 		self._archive.reset()
-		self._archive.extract(path=workdir, targets=[entry.name])
+		try:
+			self._archive.extract(path=workdir, targets=[entry.name])
+		except self._py7zr.exceptions.ArchiveError as error:
+			# py7zr a ses propres exceptions : on les ramène à une erreur de lecture connue
+			# pour qu'une entrée trafiquée produise un verdict et non une trace.
+			raise ValueError(f"Entrée 7z illisible : {error}") from error
 
 		extracted = workdir / entry.name
 		if not extracted.is_file():

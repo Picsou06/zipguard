@@ -7,18 +7,23 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .formats import (
 	Archive,
+	EncryptedArchive,
 	Entry,
 	ReadCapExceeded,
 	UnsupportedArchive,
+	detect_kind,
 	open_archive,
 	sniff_kind,
 )
 from .limits import Limits, Verdict, human_bytes
+from .sources import MemorySource, Source, as_source
+from .trust import fingerprint
 
 CHUNK = 65536
 FREE_SPACE_CHECK_EVERY = 8 * 1024 * 1024
@@ -84,21 +89,24 @@ class Scanner:
 	"""
 	Description: Inspecte une archive sans la décompresser aveuglément et rend un verdict.
 	Usage: Scanner(Limits()).inspect(Path("archive.zip")).
-	Inputs: limits (Limits) seuils de sécurité.
+	Inputs: limits (Limits) seuils de sécurité, trusted (Iterable[str]) empreintes SHA-256 de confiance.
 	Outputs: Verdict indiquant si l'archive peut être traitée sans risque.
 
 	Le scanner ne connaît aucun format : il parle à un adaptateur commun, ce qui fait que
 	zip, tar, tar.gz, tar.bz2, tar.xz, gz, bz2, xz et 7z passent exactement les mêmes seuils.
+	Il ne connaît pas davantage l'origine des octets : fichier local, mémoire ou serveur
+	distant passent par la même interface Source.
 	"""
 
-	def __init__(self, limits: Limits | None = None) -> None:
+	def __init__(self, limits: Limits | None = None, *, trusted: Iterable[str] = ()) -> None:
 		self.limits = limits or Limits()
+		self.trusted = frozenset(digest.lower() for digest in trusted)
 
 	# ------------------------------------------------------------------ inspection
 
 	def inspect(
 		self,
-		path: Path,
+		target: Source | Path,
 		*,
 		depth: int = 0,
 		name: str | None = None,
@@ -107,21 +115,42 @@ class Scanner:
 		"""
 		Description: Analyse une archive, descend dans celles qu'elle contient, et compare aux seuils.
 		Usage: scanner.inspect(Path("suspect.zip")).
-		Inputs: path (Path) archive, depth (int) profondeur courante, name (str) nom affiché, budget (_Budget) compteur interne.
-		Outputs: Verdict avec safe, reasons, stats et children.
+		Inputs: target (Source | Path) archive, depth (int) profondeur courante, name (str) nom affiché, budget (_Budget) compteur interne.
+		Outputs: Verdict avec safe, reasons, codes, stats et children.
 		"""
 
-		path = Path(path)
-		label = name if name is not None else path.name
+		source = as_source(target)
+		label = name if name is not None else source.name
 		budget = budget or _Budget(self.limits.max_nested_scans)
 		base = {"name": label, "depth": depth}
 
+		verdict = self._inspect_source(source, base, depth, budget)
+		return self._account_download(source, verdict)
+
+	def _inspect_source(self, source: Source, base: dict, depth: int, budget: _Budget) -> Verdict:
+		"""
+		Description: Corps de l'inspection, une fois la source et le nom établis.
+		Usage: interne à inspect.
+		Inputs: source (Source), base (dict) nom et profondeur, depth (int), budget (_Budget).
+		Outputs: Verdict.
+		"""
+
+		if self.trusted:
+			try:
+				base = {**base, "sha256": fingerprint(source)}
+			except OSError as error:
+				return Verdict.refused(base, "unreadable", f"Archive illisible : {error}")
+			if base["sha256"] in self.trusted:
+				return self._trusted_verdict(source, base)
+
 		try:
-			handle = open_archive(path, read_cap=self.limits.max_total_bytes)
+			handle = open_archive(source, read_cap=self.limits.max_total_bytes)
 		except UnsupportedArchive as error:
-			return Verdict(False, [str(error)], base)
+			return Verdict.refused(base, "unsupported", str(error))
+		except EncryptedArchive as error:
+			return Verdict.refused({**base, "kind": "7z", "encrypted": True}, "encrypted", str(error))
 		except _READ_ERRORS as error:
-			return Verdict(False, [f"Archive illisible : {error}"], base)
+			return Verdict.refused(base, "unreadable", f"Archive illisible : {error}")
 
 		with handle:
 			try:
@@ -131,30 +160,84 @@ class Scanner:
 					f"Lecture coupée après {human_bytes(error.read)} : le contenu dépasse "
 					f"le plafond de {human_bytes(error.cap)}."
 				)
-				return Verdict(
-					False,
-					[reason],
-					{
-						**base,
-						"kind": handle.kind,
-						"measured": True,
-						"total_uncompressed": error.read,
-						"cut_at_cap": True,
-					},
-				)
+				stats = {
+					**base,
+					"kind": handle.kind,
+					"measured": True,
+					"total_uncompressed": error.read,
+					"cut_at_cap": True,
+				}
+				return Verdict.refused(stats, "read_cap", reason)
 			except _READ_ERRORS as error:
-				return Verdict(
-					False,
-					[f"Archive illisible ou corrompue : {error}"],
+				return Verdict.refused(
 					{**base, "kind": handle.kind},
+					"unreadable",
+					f"Archive illisible ou corrompue : {error}",
 				)
 
 			candidates = self._nested_candidates(handle, entries)
 			stats = self._build_stats(handle, entries, base, len(candidates))
-			reasons = self._threshold_reasons(stats)
-			children = self._descend(handle, candidates, depth, budget, reasons)
+			findings = self._threshold_reasons(stats)
+			children = self._descend(handle, candidates, depth, budget, findings)
 
-		return Verdict(not reasons, reasons, stats, children)
+		return Verdict(
+			not findings,
+			[message for _, message in findings],
+			stats,
+			children,
+			[code for code, _ in findings],
+		)
+
+	@staticmethod
+	def _trusted_verdict(source: Source, base: dict) -> Verdict:
+		"""
+		Description: Rend le verdict d'une archive reconnue par son empreinte.
+		Usage: interne à _inspect_source.
+		Inputs: source (Source), base (dict) contenant déjà l'empreinte.
+		Outputs: Verdict sûr, sans inspection du contenu.
+
+		Une archive de confiance n'est pas inspectée : c'est tout l'intérêt, pour un jeu de
+		données légitime dont le ratio ferait peur. La confiance porte sur le verdict, pas
+		sur l'écriture : les quotas d'extraction s'appliquent toujours.
+		"""
+
+		try:
+			kind = detect_kind(source)
+		except _READ_ERRORS:  # pragma: no cover - l'empreinte vient de lire la source
+			kind = None
+		return Verdict(True, [], {**base, "kind": kind, "trusted": True})
+
+	def _account_download(self, source: Source, verdict: Verdict) -> Verdict:
+		"""
+		Description: Ajoute au verdict d'une archive distante ce qui a été téléchargé.
+		Usage: interne à inspect.
+		Inputs: source (Source), verdict (Verdict) déjà rendu.
+		Outputs: Verdict enrichi, rendu dangereux si le plafond de téléchargement a coupé.
+
+		Une lecture coupée par le plafond fait échouer la lecture en cours, ce qui donnerait
+		une raison trompeuse du type « archive illisible ». La vraie cause est remise en
+		tête, avec son propre code.
+		"""
+
+		downloaded = getattr(source, "downloaded", None)
+		if downloaded is None:
+			return verdict
+
+		stats = {**verdict.stats, "downloaded_bytes": downloaded, "source_size": source.size()}
+		if not getattr(source, "cap_exceeded", False):
+			return replace(verdict, stats=stats)
+
+		message = (
+			f"Plafond de téléchargement atteint après {human_bytes(downloaded)} : "
+			f"l'archive n'a pas pu être lue en entier sous {human_bytes(self.limits.max_download_bytes)}."
+		)
+		return Verdict(
+			False,
+			[message, *verdict.reasons],
+			stats,
+			verdict.children,
+			["download_cap", *verdict.codes],
+		)
 
 	def _build_stats(
 		self,
@@ -183,35 +266,55 @@ class Scanner:
 			"biggest_entry": max((entry.size for entry in entries), default=0),
 			"nested_archives": nested,
 			"links": sum(1 for entry in entries if entry.is_link),
+			"encrypted_entries": sum(1 for entry in entries if entry.is_encrypted),
 			"cut_at_cap": False,
 		}
 
-	def _threshold_reasons(self, stats: dict) -> list[str]:
+	def _threshold_reasons(self, stats: dict) -> list[tuple[str, str]]:
 		"""
 		Description: Confronte les statistiques aux seuils et formule chaque refus en clair.
 		Usage: interne à inspect.
 		Inputs: stats (dict) chiffres de l'archive.
-		Outputs: list[str] des raisons, vide si tout passe.
+		Outputs: list[tuple[str, str]] des couples (code, raison), vide si tout passe.
 		"""
 
 		limits = self.limits
-		reasons: list[str] = []
+		findings: list[tuple[str, str]] = []
 
 		if stats["entries"] > limits.max_entries:
-			reasons.append(f"Trop d'entrées : {stats['entries']} > {limits.max_entries}.")
+			findings.append(
+				("too_many_entries", f"Trop d'entrées : {stats['entries']} > {limits.max_entries}.")
+			)
 		if stats["total_uncompressed"] > limits.max_total_bytes:
-			reasons.append(
-				f"Taille décompressée trop grande : {human_bytes(stats['total_uncompressed'])} "
-				f"> {human_bytes(limits.max_total_bytes)}."
+			findings.append(
+				(
+					"total_size",
+					f"Taille décompressée trop grande : {human_bytes(stats['total_uncompressed'])} "
+					f"> {human_bytes(limits.max_total_bytes)}.",
+				)
 			)
 		if stats["biggest_entry"] > limits.max_entry_bytes:
-			reasons.append(
-				f"Une entrée dépasse la limite par fichier : "
-				f"{human_bytes(stats['biggest_entry'])} > {human_bytes(limits.max_entry_bytes)}."
+			findings.append(
+				(
+					"entry_size",
+					f"Une entrée dépasse la limite par fichier : "
+					f"{human_bytes(stats['biggest_entry'])} > {human_bytes(limits.max_entry_bytes)}.",
+				)
 			)
 		if stats["ratio"] > limits.max_ratio:
-			reasons.append(f"Ratio de compression anormal : {stats['ratio']:.1f}x > {limits.max_ratio}x.")
-		return reasons
+			findings.append(
+				("ratio", f"Ratio de compression anormal : {stats['ratio']:.1f}x > {limits.max_ratio}x.")
+			)
+		if stats["encrypted_entries"]:
+			findings.append(
+				(
+					"encrypted",
+					f"Archive chiffrée : {stats['encrypted_entries']} entrée(s) illisible(s) sans mot "
+					"de passe. Les tailles annoncées ne peuvent pas être vérifiées et une archive "
+					"imbriquée n'y serait pas vue : le contenu est invérifiable.",
+				)
+			)
+		return findings
 
 	def _nested_candidates(self, handle: Archive, entries: list[Entry]) -> list[Entry]:
 		"""
@@ -226,7 +329,7 @@ class Scanner:
 
 		candidates = []
 		for entry in entries:
-			if entry.is_dir or entry.is_link or entry.size <= 0:
+			if entry.is_dir or entry.is_link or entry.is_encrypted or entry.size <= 0:
 				continue
 			if sniff_kind(handle.head(entry)) is not None:
 				candidates.append(entry)
@@ -238,12 +341,12 @@ class Scanner:
 		candidates: list[Entry],
 		depth: int,
 		budget: _Budget,
-		reasons: list[str],
+		findings: list[tuple[str, str]],
 	) -> list[Verdict]:
 		"""
 		Description: Inspecte les archives imbriquées, ou refuse quand la profondeur l'interdit.
 		Usage: interne à inspect.
-		Inputs: handle (Archive), candidates (list[Entry]), depth (int), budget (_Budget), reasons (list[str]) enrichie sur place.
+		Inputs: handle (Archive), candidates (list[Entry]), depth (int), budget (_Budget), findings (list) enrichie sur place.
 		Outputs: list[Verdict] des archives filles inspectées.
 		"""
 
@@ -251,25 +354,31 @@ class Scanner:
 			return []
 
 		if depth >= self.limits.max_depth:
-			reasons.append(
-				f"{len(candidates)} archive(s) imbriquée(s) non inspectée(s) : profondeur "
-				f"maximale de {self.limits.max_depth} atteinte, donc contenu invérifiable."
+			findings.append(
+				(
+					"depth",
+					f"{len(candidates)} archive(s) imbriquée(s) non inspectée(s) : profondeur "
+					f"maximale de {self.limits.max_depth} atteinte, donc contenu invérifiable.",
+				)
 			)
 			return []
 
 		children: list[Verdict] = []
 		for entry in candidates:
 			if not budget.take():
-				reasons.append(
-					f"Budget d'inspection épuisé après {self.limits.max_nested_scans} "
-					"archives imbriquées : le reste est invérifiable."
+				findings.append(
+					(
+						"nested_budget",
+						f"Budget d'inspection épuisé après {self.limits.max_nested_scans} "
+						"archives imbriquées : le reste est invérifiable.",
+					)
 				)
 				break
 			child = self._inspect_nested(handle, entry, depth + 1, budget)
 			children.append(child)
 			if not child.safe:
 				detail = " ".join(child.reasons)
-				reasons.append(f"Archive imbriquée dangereuse — {entry.name} : {detail}")
+				findings.append(("nested", f"Archive imbriquée dangereuse — {entry.name} : {detail}"))
 		return children
 
 	def _inspect_nested(
@@ -280,32 +389,69 @@ class Scanner:
 		budget: _Budget,
 	) -> Verdict:
 		"""
-		Description: Recopie une entrée imbriquée dans un fichier temporaire borné, puis l'inspecte.
+		Description: Recopie une entrée imbriquée dans un tampon borné, puis l'inspecte.
 		Usage: interne à _descend.
 		Inputs: handle (Archive), entry (Entry) archive fille, depth (int), budget (_Budget).
 		Outputs: Verdict de l'archive fille.
 
 		La copie est plafonnée : une archive fille qui gonfle pendant la lecture est refusée
-		sans jamais remplir le disque de travail.
+		sans jamais remplir le disque de travail. Quand la source parente est sur disque, le
+		tampon est un fichier temporaire ; sinon, c'est la mémoire, sous le plafond plus
+		serré de max_buffer_bytes, pour que l'inspection d'une archive distante n'écrive
+		vraiment rien.
 		"""
 
 		base = {"name": entry.name, "depth": depth}
 		cap = min(self.limits.max_entry_bytes, self.limits.max_total_bytes)
-		temporary = Path(tempfile.mkdtemp(prefix="zipguard-")) / "imbriquee.bin"
 
+		if not handle.source.on_disk:
+			cap = min(cap, self.limits.max_buffer_bytes)
+			try:
+				data = self._read_capped(handle, entry, cap)
+			except _READ_ERRORS as error:
+				return Verdict.refused(base, "unreadable", f"Archive imbriquée illisible : {error}")
+			if data is None:
+				return Verdict.refused(
+					base,
+					"nested_cut",
+					f"Archive imbriquée coupée à {human_bytes(cap)} pendant la lecture en mémoire.",
+				)
+			return self.inspect(MemorySource(data, entry.name), depth=depth, budget=budget)
+
+		temporary = Path(tempfile.mkdtemp(prefix="zipguard-")) / "imbriquee.bin"
 		try:
 			copied = self._copy_capped(handle, entry, temporary, cap)
 			if copied is None:
-				return Verdict(
-					False,
-					[f"Archive imbriquée coupée à {human_bytes(cap)} pendant la lecture."],
+				return Verdict.refused(
 					base,
+					"nested_cut",
+					f"Archive imbriquée coupée à {human_bytes(cap)} pendant la lecture.",
 				)
 			return self.inspect(temporary, depth=depth, name=entry.name, budget=budget)
 		except _READ_ERRORS as error:
-			return Verdict(False, [f"Archive imbriquée illisible : {error}"], base)
+			return Verdict.refused(base, "unreadable", f"Archive imbriquée illisible : {error}")
 		finally:
 			shutil.rmtree(temporary.parent, ignore_errors=True)
+
+	@staticmethod
+	def _read_capped(handle: Archive, entry: Entry, cap: int) -> bytes | None:
+		"""
+		Description: Lit une entrée en mémoire en s'arrêtant net au plafond.
+		Usage: interne à _inspect_nested, pour les sources sans disque.
+		Inputs: handle (Archive), entry (Entry), cap (int) plafond d'octets.
+		Outputs: bytes lus, ou None si le plafond a été franchi.
+		"""
+
+		buffer = bytearray()
+		with handle.open(entry) as source:
+			while True:
+				chunk = source.read(CHUNK)
+				if not chunk:
+					break
+				if len(buffer) + len(chunk) > cap:
+					return None
+				buffer += chunk
+		return bytes(buffer)
 
 	@staticmethod
 	def _copy_capped(handle: Archive, entry: Entry, target: Path, cap: int) -> int | None:
@@ -412,6 +558,12 @@ class Scanner:
 				if entry.is_dir:
 					continue
 				raise ExtractionRefused(f"Entrée sans nom refusée : {entry.name!r}")
+
+			if entry.is_encrypted:
+				raise ExtractionRefused(
+					f"Entrée chiffrée refusée : {entry.name}. ZipGuard n'extrait rien qu'il ne peut "
+					"pas lire et compter."
+				)
 
 			kind, target = "dir" if entry.is_dir else "file", ""
 			if entry.is_link:

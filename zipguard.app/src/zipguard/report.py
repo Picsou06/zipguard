@@ -230,6 +230,24 @@ def render(
 		]
 		if stats.get("links"):
 			lines.append(_field("liens symboliques", str(stats["links"]), enabled))
+		if stats.get("encrypted_entries"):
+			lines.append(_field("entrées chiffrées", str(stats["encrypted_entries"]), enabled))
+
+	if stats.get("trusted"):
+		lines += [
+			"",
+			_field("confiance", "empreinte présente dans la liste, contenu non inspecté", enabled),
+		]
+	if stats.get("sha256"):
+		lines.append(_field("sha256", stats["sha256"], enabled))
+	if "downloaded_bytes" in stats:
+		lines.append(
+			_field(
+				"téléchargé",
+				f"{human_bytes(stats['downloaded_bytes'])} sur {human_bytes(stats.get('source_size', 0))}",
+				enabled,
+			)
+		)
 
 	if verdict.children:
 		lines += ["", f"   {_paint('archives imbriquées', 'bold', enabled=enabled)}"]

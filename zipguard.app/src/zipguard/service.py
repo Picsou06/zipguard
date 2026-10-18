@@ -83,10 +83,10 @@ def _worker(path: str, limits: dict, pipe, max_memory_bytes: int = 0) -> None:
 		try:
 			verdict = Scanner(Limits(**limits)).inspect(Path(path))
 		except MemoryError:
-			verdict = Verdict(
-				False,
-				["Mémoire épuisée pendant l'analyse : l'archive dépasse le plafond du worker."],
+			verdict = Verdict.refused(
 				{"name": Path(path).name, "depth": 0},
+				"memory",
+				"Mémoire épuisée pendant l'analyse : l'archive dépasse le plafond du worker.",
 			)
 		pipe.send(("ok", verdict.as_dict()))
 	except BaseException as error:  # pragma: no cover - filet de sécurité du worker
@@ -108,6 +108,7 @@ def _verdict_from_dict(payload: dict) -> Verdict:
 		reasons=list(payload["reasons"]),
 		stats=dict(payload["stats"]),
 		children=[_verdict_from_dict(child) for child in payload.get("children", [])],
+		codes=list(payload.get("codes", [])),
 	)
 
 

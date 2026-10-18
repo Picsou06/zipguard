@@ -27,6 +27,8 @@ de GitHub.
   toucher aux fichiers qui s'y trouvaient déjà.
 - Ne rien écrire sur le disque pendant l'inspection d'une archive distante.
 - Refuser une archive chiffrée plutôt que de la juger sur des tailles invérifiables.
+- Ne jamais laisser un nom venu d'une archive écrire des séquences de contrôle dans le
+  terminal.
 
 ## Ce que ZipGuard ne promet pas
 
@@ -42,7 +44,8 @@ Ces limites sont connues et documentées dans
   borne ce coût, il ne le supprime pas.
 - **Le bac à sable du worker** (seccomp, limites de ressources, cgroup) réduit ce qu'un
   analyseur compromis pourrait faire, il ne le rend pas impossible : le filtre seccomp est
-  une liste de refus, Linux seulement, et le cgroup exige une délégation. Une archive de
+  une liste de refus, Linux seulement ; Landlock limite l'écriture mais pas la lecture ; et
+  le cgroup exige une délégation. Une archive de
   confiance n'est pas inspectée du tout : la liste `--trust` doit être tenue avec soin.
 
 ## Utilisation responsable

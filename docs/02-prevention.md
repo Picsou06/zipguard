@@ -168,7 +168,21 @@ sien (`max_download_bytes`), qui devient la raison du refus quand il coupe.
 
 Ce mode refuse plutôt que de deviner : un serveur qui n'annonce pas la taille du fichier
 prive le ratio de son dénominateur, et un serveur qui recompresse à la volée servirait des
-octets qui ne sont pas ceux de l'archive.
+octets qui ne sont pas ceux de l'archive. Il se méfie aussi du serveur lui même : seules
+les redirections vers http et https sont suivies, chaque plage porte `If-Range` pour
+qu'un fichier modifié en cours de route arrête l'inspection, et un délai total coupe un
+serveur qui enverrait un octet juste avant chaque délai par requête.
+
+`zipguard scan -` applique la même règle à l'entrée standard : recueillie en mémoire, sous
+le même plafond, jamais écrite sur le disque.
+
+## Ce que l'archive écrit dans le terminal
+
+Un nom d'entrée est choisi par l'auteur de l'archive, et un outil qui l'affiche tel quel
+lui prête son terminal. Une séquence ANSI peut effacer la ligne du verdict et en dessiner
+une fausse ; un caractère d'inversion de sens (U+202E) peut faire lire `txt.exe` comme
+`exe.txt`. ZipGuard affiche donc tout caractère de contrôle ou de mise en forme venu
+d'une archive en échappement visible, dans le rapport, les erreurs et le SARIF.
 
 ## En production
 
@@ -183,8 +197,9 @@ octets qui ne sont pas ceux de l'archive.
 - Enfermer le worker : un analyseur d'archives est du code qui lit des données hostiles,
   et la question n'est pas de savoir s'il aura un jour une faille, mais ce qu'elle
   permettra. Sous seccomp, un worker compromis ne peut ni ouvrir le réseau, ni lancer un
-  programme, ni observer un autre processus ; sous ses limites de ressources, il ne peut
-  ni remplir le disque ni la mémoire. `zipguard serve --sandbox strict` refuse d'analyser
+  programme, ni créer un processus, ni signaler ou observer un autre processus ; sous
+  Landlock, il n'écrit que dans son propre dossier ; sous ses limites de ressources, il
+  ne peut ni remplir le disque ni la mémoire. `zipguard serve --sandbox strict` refuse d'analyser
   si l'une de ces couches manque.
 - Protéger le service lui même : un délai sur chaque lecture réseau contre les envois au
   compte goutte, et un nombre borné d'analyses simultanées (`--read-timeout`,

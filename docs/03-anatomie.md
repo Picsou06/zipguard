@@ -32,7 +32,7 @@ zipguard/
     │   ├── bench.py          corpus synthétique et mesure des garde fous
     │   ├── demo.py           générateur de démonstration borné
     │   └── __main__.py       interface en ligne de commande
-    └── tests/                couverture du comportement, 261 tests
+    └── tests/                couverture du comportement, 283 tests
 ```
 
 ## L'idée centrale : le scanner ne connaît aucun format
@@ -133,7 +133,8 @@ Un outil défensif qui cache ses angles morts n'est pas défendable. Ceux de Zip
   pas lues.
 - **Le filtre seccomp est une liste de refus**, pas une liste blanche. Il ferme ce qu'un
   analyseur compromis chercherait en premier (réseau, exécution, autres processus, noyau),
-  pas tout. Il n'existe que sous Linux x86_64 et aarch64 ; ailleurs, `--sandbox strict`
+  pas tout. Landlock complète pour le système de fichiers, mais ne restreint pas la
+  lecture : un worker compromis peut lire ce que l'utilisateur du service peut lire. Il n'existe que sous Linux x86_64 et aarch64 ; ailleurs, `--sandbox strict`
   refuse d'analyser plutôt que de faire semblant.
 - **Le cgroup suppose une délégation** du cgroup v2 à l'utilisateur du service. Sans elle,
   les limites de ressources par processus restent le seul plafond.

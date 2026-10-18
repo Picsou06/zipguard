@@ -331,8 +331,7 @@ class Scanner:
 				(
 					"encrypted",
 					f"Archive chiffrée : {stats['encrypted_entries']} entrée(s) illisible(s) sans mot "
-					"de passe. Les tailles annoncées ne peuvent pas être vérifiées et une archive "
-					"imbriquée n'y serait pas vue : le contenu est invérifiable.",
+					"de passe, contenu invérifiable.",
 				)
 			)
 		return findings

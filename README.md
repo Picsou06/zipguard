@@ -100,6 +100,11 @@ pip install ".[7z]"
 
 ### Inspecter une archive (le cœur défensif)
 
+Toute sortie qui reprend un nom venu de l'archive est rendue inoffensive avant d'atteindre
+le terminal : une séquence ANSI ou un caractère d'inversion de sens dans un nom d'entrée
+s'affiche en échappement visible (`\x1b`, `\u202e`), jamais interprété.
+
+
 ```bash
 zipguard scan une_archive.zip
 ```
@@ -188,8 +193,8 @@ ne le fait pas bouger.
 
 Chaque raison porte un **code stable** dans `codes`, dans le même ordre : `ratio`,
 `total_size`, `entry_size`, `too_many_entries`, `read_cap`, `encrypted`, `nested`,
-`nested_cut`, `depth`, `nested_budget`, `download_cap`, `memory`, `unreadable`,
-`unsupported`. Les phrases sont faites pour être lues et peuvent changer ; les codes sont
+`nested_cut`, `depth`, `nested_budget`, `download_cap`, `download_timeout`, `memory`,
+`unreadable`, `unsupported`. Les phrases sont faites pour être lues et peuvent changer ; les codes sont
 faits pour être triés par une machine.
 
 ### L'action GitHub, en une ligne
@@ -289,11 +294,17 @@ imbriquées, est jugée en moins d'une seconde après 3,5 Mio téléchargés.
 | `--max-download-mb` | 200 | Coupe toute lecture au delà, et devient la raison du refus |
 | `--max-buffer-mb` | 64 | Mémoire accordée à une archive imbriquée lue sans disque |
 | `--remote-timeout` | 30 s | Délai de chaque requête |
+| `--remote-deadline` | 300 s | Délai total : un serveur qui envoie un octet toutes les 29 s ne tient plus l'inspection indéfiniment |
 
 Avec `-`, l'archive est lue sur l'entrée standard, en mémoire, sous le même plafond de
 téléchargement : `curl -s https://exemple.org/a.tar.gz | zipguard scan -`.
 
 Un `tar` ou un flux compressé distant est lu dans l'ordre, derrière les mêmes plafonds.
+Seules les redirections vers http et https sont suivies. Chaque plage porte `If-Range` :
+si le fichier change pendant l'inspection, elle s'arrête au lieu de juger un mélange de
+deux archives. Des identifiants dans l'adresse (`https://moi:secret@...`) partent en
+en-tête `Authorization`, jamais vers le serveur d'une redirection, et sont masqués
+(`***@`) dans les rapports.
 Sont refusés, avec une raison claire : un serveur qui n'annonce pas la taille du fichier
 (c'est le dénominateur du ratio), un serveur qui recompresse à la volée, et un zip ou un
 7z sur un serveur qui ne sait pas servir de plages, puisque leur manifeste est en fin de
@@ -382,6 +393,12 @@ de chiffrement de chaque entrée zip (historique comme AES) et par `py7zr` pour 
 compris quand même la liste des entrées est chiffrée. Avant la version 2.2, un zip chiffré
 faisait planter le scanner.
 
+<div align="center">
+
+<img src="assets/scan-chiffree.svg" width="760" alt="Sortie réelle de zipguard scan sur une archive chiffrée" />
+
+</div>
+
 Trois des garde fous de la version 2 bouchent chacun un trou précis :
 
 - **`max_depth` ne se contente plus de refuser l'imbrication** : ZipGuard descend vraiment
@@ -451,7 +468,8 @@ Avant de lire le moindre octet de l'archive, le worker s'enferme :
 
 | Couche | Ce qu'elle interdit |
 | :-- | :-- |
-| **seccomp** (Linux x86_64 et aarch64) | Réseau, lancement de programmes (`execve`), `fork`, `ptrace`, accès à la mémoire d'autres processus, montages, modules noyau, `bpf`, espaces de noms, `io_uring` : refusés avec `EPERM` |
+| **seccomp** (Linux x86_64 et aarch64) | Réseau, lancement de programmes (`execve`), création de processus (`fork`, `clone` hors threads), signaux vers un autre processus, `ptrace`, accès à la mémoire d'autres processus, montages, modules noyau, `bpf`, espaces de noms, `io_uring` : refusés avec `EPERM` |
+| **Landlock** (Linux 5.13 et plus) | Écrire hors d'un dossier privé créé pour le worker et effacé après lui : il lit ce qu'il veut, mais n'écrit, ne crée, ne renomme et ne supprime que là |
 | **no_new_privs** | Regagner des privilèges par un exécutable setuid |
 | **Limites de ressources** | Mémoire, temps processeur, taille de fichier écrit, descripteurs ouverts, fichiers core ; les limites dures descendent avec les souples, le worker ne peut pas les relever |
 | **cgroup v2** (`--cgroup-root`) | Un cgroup jetable par worker : `memory.max`, `pids.max`, et `cgroup.kill` sur délai dépassé |
@@ -612,7 +630,7 @@ La suite, pour qui veut continuer :
 ```bash
 cd zipguard.app
 pip install -r requirements-dev.txt
-pytest -q                         # 261 tests
+pytest -q                         # 283 tests
 pytest -q --cov=zipguard          # avec la couverture
 ruff check .                      # style et erreurs courantes
 ```

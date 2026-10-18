@@ -14,6 +14,7 @@ from .formats import supported_kinds
 from .limits import Limits, human_bytes
 from .report import render, render_json
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
+from .trust import fingerprint, load_allowlist
 
 EXIT_OK = 0
 EXIT_UNSAFE = 1
@@ -42,6 +43,40 @@ def _add_threshold_flags(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument("--max-entry-mb", type=int, default=defaults.max_entry_bytes // 1_000_000)
 	parser.add_argument("--max-entries", type=int, default=defaults.max_entries)
 	parser.add_argument("--max-depth", type=int, default=defaults.max_depth)
+
+
+def _add_trust_flag(parser: argparse.ArgumentParser) -> None:
+	"""
+	Description: Ajoute l'option qui charge une liste d'empreintes de confiance.
+	Usage: _add_trust_flag(scan_parser).
+	Inputs: parser (ArgumentParser) sous commande à enrichir.
+	Outputs: None, le parser est modifié sur place.
+	"""
+
+	parser.add_argument(
+		"--trust",
+		type=Path,
+		default=None,
+		metavar="FICHIER",
+		help="Liste d'empreintes SHA-256 de confiance, au format de sha256sum.",
+	)
+
+
+def _trusted_from(args: argparse.Namespace) -> frozenset[str] | None:
+	"""
+	Description: Charge la liste de confiance demandée, ou signale pourquoi elle est illisible.
+	Usage: trusted = _trusted_from(args).
+	Inputs: args (Namespace) options analysées.
+	Outputs: frozenset[str] des empreintes, vide sans --trust ; None si le fichier est invalide.
+	"""
+
+	if args.trust is None:
+		return frozenset()
+	try:
+		return load_allowlist(args.trust)
+	except (OSError, ValueError) as error:
+		print(f"zipguard: liste de confiance illisible : {error}", file=sys.stderr)
+		return None
 
 
 def _add_render_flags(parser: argparse.ArgumentParser) -> None:
@@ -116,12 +151,14 @@ def _build_parser() -> argparse.ArgumentParser:
 	scan = sub.add_parser("scan", help="Inspecte une archive et rend un verdict.")
 	scan.add_argument("archive", type=Path)
 	_add_threshold_flags(scan)
+	_add_trust_flag(scan)
 	_add_render_flags(scan)
 
 	extract = sub.add_parser("extract", help="Extrait une archive jugée sûre, en comptant les octets.")
 	extract.add_argument("archive", type=Path)
 	extract.add_argument("destination", type=Path)
 	_add_threshold_flags(extract)
+	_add_trust_flag(extract)
 	_add_render_flags(extract)
 	extract.add_argument("--max-extract-mb", type=int, default=None)
 	extract.add_argument("--min-free-mb", type=int, default=None)
@@ -163,6 +200,7 @@ def _build_parser() -> argparse.ArgumentParser:
 		help="Analyse dans le processus du serveur au lieu d'un worker jetable.",
 	)
 	_add_threshold_flags(serve)
+	_add_trust_flag(serve)
 
 	bench = sub.add_parser("bench", help="Mesure le temps que met chaque garde fou à trancher.")
 	bench.add_argument("--repeat", type=int, default=3)
@@ -170,6 +208,12 @@ def _build_parser() -> argparse.ArgumentParser:
 	_add_render_flags(bench)
 
 	sub.add_parser("formats", help="Liste les formats d'archive pris en charge.")
+
+	prints = sub.add_parser(
+		"fingerprint",
+		help="Affiche l'empreinte SHA-256 d'archives, prête pour une liste --trust.",
+	)
+	prints.add_argument("archives", type=Path, nargs="+")
 
 	return parser
 
@@ -186,8 +230,12 @@ def _command_scan(args: argparse.Namespace) -> int:
 		print(f"zipguard: archive introuvable : {args.archive}", file=sys.stderr)
 		return EXIT_ERROR
 
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
+
 	limits = _limits_from(args)
-	verdict = Scanner(limits).inspect(args.archive)
+	verdict = Scanner(limits, trusted=trusted).inspect(args.archive)
 
 	if args.json:
 		print(render_json(str(args.archive), verdict, limits=limits, indent=2))
@@ -209,8 +257,12 @@ def _command_extract(args: argparse.Namespace) -> int:
 		print(f"zipguard: archive introuvable : {args.archive}", file=sys.stderr)
 		return EXIT_ERROR
 
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
+
 	limits = _limits_from(args)
-	scanner = Scanner(limits)
+	scanner = Scanner(limits, trusted=trusted)
 
 	try:
 		written = scanner.safe_extract(args.archive, args.destination, allow_links=args.allow_links)
@@ -292,8 +344,13 @@ def _command_serve(args: argparse.Namespace) -> int:
 
 	from .service import serve
 
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
+
 	serve(
 		limits=_limits_from(args),
+		trusted=trusted,
 		host=args.host,
 		port=args.port,
 		max_upload_bytes=args.max_upload_mb * 1_000_000,
@@ -350,6 +407,27 @@ def _command_formats(_: argparse.Namespace) -> int:
 	return EXIT_OK
 
 
+def _command_fingerprint(args: argparse.Namespace) -> int:
+	"""
+	Description: Exécute la sous commande fingerprint.
+	Usage: interne à main.
+	Inputs: args (Namespace) options analysées.
+	Outputs: int code de sortie.
+
+	La sortie reprend exactement le format de sha256sum : on peut la rediriger telle quelle
+	dans une liste de confiance, et la relire avec sha256sum --check.
+	"""
+
+	status = EXIT_OK
+	for archive in args.archives:
+		try:
+			print(f"{fingerprint(archive)}  {archive}")
+		except OSError as error:
+			print(f"zipguard: lecture impossible : {archive} ({error.strerror or error})", file=sys.stderr)
+			status = EXIT_ERROR
+	return status
+
+
 _COMMANDS = {
 	"scan": _command_scan,
 	"extract": _command_extract,
@@ -357,6 +435,7 @@ _COMMANDS = {
 	"serve": _command_serve,
 	"bench": _command_bench,
 	"formats": _command_formats,
+	"fingerprint": _command_fingerprint,
 }
 
 

@@ -66,11 +66,17 @@ def apply_memory_limit(max_bytes: int) -> bool:
 	return True
 
 
-def _worker(path: str, limits: dict, pipe, max_memory_bytes: int = 0) -> None:
+def _worker(
+	path: str,
+	limits: dict,
+	pipe,
+	max_memory_bytes: int = 0,
+	trusted: tuple[str, ...] = (),
+) -> None:
 	"""
 	Description: Analyse une archive dans un processus séparé et renvoie le verdict par le tube.
 	Usage: cible interne de multiprocessing, jamais appelée directement.
-	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire, 0 pour aucun.
+	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire, 0 pour aucun, trusted (tuple[str, ...]) empreintes de confiance.
 	Outputs: None, le verdict part dans le tube.
 
 	Doit rester au niveau du module pour être picklable avec la méthode spawn. Une archive
@@ -81,7 +87,7 @@ def _worker(path: str, limits: dict, pipe, max_memory_bytes: int = 0) -> None:
 	try:
 		apply_memory_limit(max_memory_bytes)
 		try:
-			verdict = Scanner(Limits(**limits)).inspect(Path(path))
+			verdict = Scanner(Limits(**limits), trusted=trusted).inspect(Path(path))
 		except MemoryError:
 			verdict = Verdict.refused(
 				{"name": Path(path).name, "depth": 0},
@@ -117,11 +123,12 @@ def scan_in_worker(
 	limits: Limits,
 	timeout: float = DEFAULT_TIMEOUT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
+	trusted: frozenset[str] = frozenset(),
 ) -> Verdict:
 	"""
 	Description: Analyse une archive dans un processus jetable, tué net au bout du délai.
 	Usage: scan_in_worker(Path("suspect.zip"), Limits(), timeout=30).
-	Inputs: path (Path) archive, limits (Limits) seuils, timeout (float) délai en secondes, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun.
+	Inputs: path (Path) archive, limits (Limits) seuils, timeout (float) délai en secondes, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun, trusted (frozenset[str]) empreintes de confiance.
 	Outputs: Verdict de l'analyse.
 
 	Un serveur qui analyse des archives inconnues dans son propre processus se fait tuer
@@ -134,7 +141,7 @@ def scan_in_worker(
 	parent, child = context.Pipe(duplex=False)
 	process = context.Process(
 		target=_worker,
-		args=(str(path), limits.as_dict(), child, max_memory_bytes),
+		args=(str(path), limits.as_dict(), child, max_memory_bytes, tuple(sorted(trusted))),
 	)
 	process.start()
 	child.close()
@@ -171,6 +178,7 @@ class _Handler(BaseHTTPRequestHandler):
 	sys_version = ""
 
 	limits: Limits = Limits()
+	trusted: frozenset[str] = frozenset()
 	max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
 	timeout_seconds: float = DEFAULT_TIMEOUT
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES
@@ -208,7 +216,7 @@ class _Handler(BaseHTTPRequestHandler):
 		if self.path == "/health":
 			self._send(200, {"status": "ok", "version": __version__})
 		elif self.path == "/limits":
-			self._send(200, self.limits.as_dict())
+			self._send(200, {**self.limits.as_dict(), "trusted_fingerprints": len(self.trusted)})
 		else:
 			self._send(404, {"error": "Route inconnue.", "routes": ["/health", "/limits", "/scan"]})
 
@@ -289,9 +297,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 			try:
 				if self.isolate:
-					verdict = scan_in_worker(target, self.limits, self.timeout_seconds, self.max_memory_bytes)
+					verdict = scan_in_worker(
+						target,
+						self.limits,
+						self.timeout_seconds,
+						self.max_memory_bytes,
+						self.trusted,
+					)
 				else:
-					verdict = Scanner(self.limits).inspect(target)
+					verdict = Scanner(self.limits, trusted=self.trusted).inspect(target)
 			except ScanTimeout as error:
 				return 504, {"error": str(error)}
 			except WorkerFailed as error:
@@ -319,11 +333,12 @@ def build_server(
 	read_timeout: float = DEFAULT_READ_TIMEOUT,
 	max_concurrent: int = DEFAULT_MAX_CONCURRENT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
+	trusted: frozenset[str] = frozenset(),
 ) -> ThreadingHTTPServer:
 	"""
 	Description: Construit le serveur d'analyse sans le démarrer.
 	Usage: build_server(Limits(), port=8723).serve_forever().
-	Inputs: limits (Limits) seuils, host (str) interface, port (int) port, max_upload_bytes (int) plafond d'envoi, timeout (float) délai du worker, isolate (bool) analyse en processus séparé, quiet (bool) journal muet, read_timeout (float) délai de chaque lecture réseau, max_concurrent (int) envois traités en même temps, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun.
+	Inputs: limits (Limits) seuils, host (str) interface, port (int) port, max_upload_bytes (int) plafond d'envoi, timeout (float) délai du worker, isolate (bool) analyse en processus séparé, quiet (bool) journal muet, read_timeout (float) délai de chaque lecture réseau, max_concurrent (int) envois traités en même temps, max_memory_bytes (int) plafond mémoire du worker, 0 pour aucun, trusted (frozenset[str]) empreintes de confiance.
 	Outputs: ThreadingHTTPServer prêt à servir.
 
 	L'écoute est volontairement sur la boucle locale par défaut : un service qui déballe des
@@ -342,6 +357,7 @@ def build_server(
 			"timeout": read_timeout,
 			"slots": threading.BoundedSemaphore(max(1, max_concurrent)),
 			"max_memory_bytes": max_memory_bytes,
+			"trusted": frozenset(trusted),
 		},
 	)
 	return ThreadingHTTPServer((host, port), handler)
@@ -357,6 +373,7 @@ def serve(
 	read_timeout: float = DEFAULT_READ_TIMEOUT,
 	max_concurrent: int = DEFAULT_MAX_CONCURRENT,
 	max_memory_bytes: int = DEFAULT_MAX_MEMORY_BYTES,
+	trusted: frozenset[str] = frozenset(),
 ) -> None:
 	"""
 	Description: Démarre le serveur et sert jusqu'à l'interruption au clavier.
@@ -376,6 +393,7 @@ def serve(
 		read_timeout=read_timeout,
 		max_concurrent=max_concurrent,
 		max_memory_bytes=max_memory_bytes,
+		trusted=trusted,
 	)
 	bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
 	print(f"ZipGuard écoute sur http://{bound_host}:{bound_port}")

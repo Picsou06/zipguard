@@ -78,7 +78,7 @@ défense, et un cours. Tout ce qui pourrait servir d'arme en est volontairement 
 | Module | Question | Réponse courte |
 | :-- | :-- | :-- |
 | [Comment ça marche](docs/01-comment-ca-marche.md) | Pourquoi 3 Ko deviennent 10 Go ? | Le ratio de compression des données répétitives |
-| [Prévention](docs/02-prevention.md) | Comment s'en protéger ? | Huit garde fous + mesure pendant la lecture |
+| [Prévention](docs/02-prevention.md) | Comment s'en protéger ? | Onze garde fous + mesure pendant la lecture |
 | [Anatomie](docs/03-anatomie.md) | Comment le code est organisé ? | Un adaptateur par format, un seul jeu de seuils |
 
 > 📘 **Dossier complet en PDF**, mis en page avec la charte graphique :
@@ -99,6 +99,11 @@ pip install ".[7z]"
 ```
 
 ### Inspecter une archive (le cœur défensif)
+
+Toute sortie qui reprend un nom venu de l'archive est rendue inoffensive avant d'atteindre
+le terminal : une séquence ANSI ou un caractère d'inversion de sens dans un nom d'entrée
+s'affiche en échappement visible (`\x1b`, `\u202e`), jamais interprété.
+
 
 ```bash
 zipguard scan une_archive.zip
@@ -129,17 +134,24 @@ sortie vaut `1`.
 
 | Commande | Ce qu'elle fait |
 | :-- | :-- |
-| `zipguard scan ARCHIVE` | Inspecte et rend un verdict, sans rien écrire sur le disque |
+| `zipguard scan CIBLE...` | Inspecte une archive, plusieurs, un dossier entier, une URL ou l'entrée standard (`-`), sans rien écrire sur le disque |
 | `zipguard extract ARCHIVE DEST` | Extrait une archive jugée sûre, en recomptant chaque octet |
 | `zipguard demo FICHIER` | Fabrique une démonstration bornée, en `zip` ou `tar.gz` |
 | `zipguard serve` | Expose le scanner en petit service HTTP local |
 | `zipguard bench` | Mesure le temps que met chaque garde fou à trancher |
 | `zipguard formats` | Liste les formats pris en charge |
+| `zipguard fingerprint ARCHIVE...` | Affiche les empreintes SHA-256, prêtes pour une liste `--trust` |
 
 Toutes les commandes d'analyse acceptent `--json`, et les seuils se règlent en ligne de
 commande : `--max-ratio`, `--max-total-mb`, `--max-entry-mb`, `--max-entries`,
 `--max-depth`, plus `--max-extract-mb`, `--min-free-mb` et `--allow-links` pour
-l'extraction.
+l'extraction. `scan` ajoute `--sarif`, `--exit-zero` et les réglages de l'inspection
+distante ; `scan`, `extract` et `serve` acceptent `--trust FICHIER`.
+
+Avec plusieurs cibles, ou un dossier, `scan` enchaîne les rapports, et `--json` rend une
+liste des mêmes objets. Un dossier est parcouru sans suivre les liens, en sautant `.git`,
+`node_modules` et consorts ; chaque fichier reconnu comme archive **par sa signature** est
+inspecté.
 
 ### Codes de sortie
 
@@ -163,11 +175,12 @@ zipguard scan livraison.zip --json | jq '.safe, .reasons'
 {
   "schema_version": 1,
   "tool": "zipguard",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "archive": "livraison.zip",
   "safe": false,
   "verdict": "DANGEREUSE",
   "reasons": ["Archive imbriquée dangereuse — notes.txt : Ratio de compression anormal : 1027.2x > 20.0x."],
+  "codes": ["nested"],
   "stats": { "kind": "zip", "entries": 2, "ratio": 1.0, "nested_archives": 1 },
   "children": [ { "safe": false, "stats": { "name": "notes.txt", "kind": "zip", "ratio": 1027.22 } } ],
   "limits": { "max_ratio": 20.0 }
@@ -175,7 +188,127 @@ zipguard scan livraison.zip --json | jq '.safe, .reasons'
 ```
 
 Le champ `schema_version` est un contrat : il changera si la forme change, pour qu'un
-script branché dessus sache quand il doit être relu.
+script branché dessus sache quand il doit être relu. Ajouter un champ ne casse personne et
+ne le fait pas bouger.
+
+Chaque raison porte un **code stable** dans `codes`, dans le même ordre : `ratio`,
+`total_size`, `entry_size`, `too_many_entries`, `read_cap`, `encrypted`, `nested`,
+`nested_cut`, `depth`, `nested_budget`, `download_cap`, `download_timeout`, `memory`,
+`unreadable`, `unsupported`. Les phrases sont faites pour être lues et peuvent changer ; les codes sont
+faits pour être triés par une machine.
+
+### L'action GitHub, en une ligne
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  zipguard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Picsou06/zipguard@v2.2.0
+```
+
+L'action installe ZipGuard depuis sa propre étiquette (sans dépendre de PyPI), parcourt le
+dépôt, et publie les refus dans l'onglet Sécurité. Le résumé du job dit combien d'archives
+ont été refusées.
+
+| Entrée | Défaut | Rôle |
+| :-- | :-- | :-- |
+| `path` | `.` | Dossier ou archive à inspecter |
+| `upload` | `true` | Publier le rapport dans l'onglet Sécurité |
+| `fail-on-findings` | `false` | Faire échouer le job si une archive est dangereuse |
+| `trust` | — | Liste d'empreintes de confiance |
+| `args` | — | Options passées à `zipguard scan`, par exemple `--max-ratio 50` |
+| `sarif-file` | `zipguard.sarif` | Chemin du rapport produit |
+
+Sorties : `findings` (nombre de refus), `unsafe` (`true` ou `false`), `sarif-file`. Les
+entrées passent au script par l'environnement, jamais par interpolation : une valeur
+contenant `$(...)` reste une valeur. La CI du dépôt teste l'action elle même.
+
+### Les refus dans l'onglet Sécurité de GitHub (SARIF)
+
+```bash
+zipguard scan . --sarif --exit-zero > zipguard.sarif
+```
+
+Le rapport [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+porte une règle par code de refus, avec sa gravité, et un résultat par raison, rattaché au
+fichier de l'archive. Dans un workflow :
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
+  - run: pip install zipguard
+  - run: zipguard scan . --sarif --exit-zero > zipguard.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    with:
+      sarif_file: zipguard.sarif
+      category: zipguard
+```
+
+`--exit-zero` laisse le job continuer jusqu'à la publication du rapport : c'est l'onglet
+Sécurité, pas le statut du job, qui porte les refus. Sans lui, le code de sortie vaut `1`
+dès qu'une archive est dangereuse, ce qui convient pour bloquer une livraison.
+
+### Archives de confiance
+
+Un jeu de données légitime peut avoir un ratio qui fait peur : un CSV de zéros se
+compresse aussi bien qu'une bombe. Plutôt que de relâcher les seuils pour tout le monde,
+on déclare ces archives **par leur empreinte** :
+
+```bash
+zipguard fingerprint donnees/*.tar.gz > confiance.txt    # même format que sha256sum
+zipguard scan donnees/ --trust confiance.txt
+```
+
+Une archive dont l'empreinte SHA-256 figure dans la liste est déclarée sûre sans être
+inspectée ; un seul octet changé et elle redevient une inconnue. La confiance porte sur le
+**verdict**, pas sur l'**écriture** : `extract` applique toujours ses quotas, et n'extrait
+jamais une entrée chiffrée. La liste se lit telle que `sha256sum` l'écrit ; une ligne mal
+formée est une erreur, jamais une ligne ignorée en silence.
+
+### Inspecter une archive distante sans la télécharger
+
+```bash
+zipguard scan https://exemple.org/livraison.zip
+```
+
+L'archive est lue par plages HTTP et **jamais posée sur le disque**, archives imbriquées
+comprises, qui sont lues en mémoire. Pour un zip, le manifeste et l'en-tête de chaque
+entrée suffisent : une roue `numpy` de 15,6 Mio, mille fichiers et cinq archives
+imbriquées, est jugée en moins d'une seconde après 3,5 Mio téléchargés.
+
+| Option | Défaut | Rôle |
+| :-- | :-- | :-- |
+| `--max-download-mb` | 200 | Coupe toute lecture au delà, et devient la raison du refus |
+| `--max-buffer-mb` | 64 | Mémoire accordée à une archive imbriquée lue sans disque |
+| `--remote-timeout` | 30 s | Délai de chaque requête |
+| `--remote-deadline` | 300 s | Délai total : un serveur qui envoie un octet toutes les 29 s ne tient plus l'inspection indéfiniment |
+
+Avec `-`, l'archive est lue sur l'entrée standard, en mémoire, sous le même plafond de
+téléchargement : `curl -s https://exemple.org/a.tar.gz | zipguard scan -`.
+
+Un `tar` ou un flux compressé distant est lu dans l'ordre, derrière les mêmes plafonds.
+Seules les redirections vers http et https sont suivies. Chaque plage porte `If-Range` :
+si le fichier change pendant l'inspection, elle s'arrête au lieu de juger un mélange de
+deux archives. Des identifiants dans l'adresse (`https://moi:secret@...`) partent en
+en-tête `Authorization`, jamais vers le serveur d'une redirection, et sont masqués
+(`***@`) dans les rapports.
+Sont refusés, avec une raison claire : un serveur qui n'annonce pas la taille du fichier
+(c'est le dénominateur du ratio), un serveur qui recompresse à la volée, et un zip ou un
+7z sur un serveur qui ne sait pas servir de plages, puisque leur manifeste est en fin de
+fichier.
 
 ### Démonstration bornée (illustrer le ratio, sans danger)
 
@@ -234,7 +367,7 @@ qui coupe au seuil, ce qui transforme **l'inventaire lui même en garde fou**.
 
 <img src="assets/divider.svg" width="100%" alt="" />
 
-## 🛡️ Les huit garde fous
+## 🛡️ Les onze garde fous
 
 <div align="center">
 
@@ -248,10 +381,25 @@ qui coupe au seuil, ce qui transforme **l'inventaire lui même en garde fou**.
 | 6 | Budget d'inspection des imbriquées | `max_nested_scans` | inspection récursive |
 | 7 | Quota d'octets réellement écrits | `max_extract_bytes` | écriture |
 | 8 | Marge d'espace disque libre exigée | `min_free_bytes` | écriture |
+| 9 | Archive chiffrée refusée | — | inspection + écriture |
+| 10 | Mémoire accordée à une imbriquée lue sans disque | `max_buffer_bytes` | inspection distante |
+| 11 | Plafond de téléchargement | `max_download_bytes` | inspection distante |
 
 </div>
 
-Trois d'entre eux sont nouveaux, et chacun bouche un trou précis :
+Une **archive chiffrée** est refusée : ses tailles annoncées ne peuvent pas être
+vérifiées, et une archive imbriquée n'y serait pas vue. ZipGuard la repère par le drapeau
+de chiffrement de chaque entrée zip (historique comme AES) et par `py7zr` pour un 7z, y
+compris quand même la liste des entrées est chiffrée. Avant la version 2.2, un zip chiffré
+faisait planter le scanner.
+
+<div align="center">
+
+<img src="assets/scan-chiffree.svg" width="760" alt="Sortie réelle de zipguard scan sur une archive chiffrée" />
+
+</div>
+
+Trois des garde fous de la version 2 bouchent chacun un trou précis :
 
 - **`max_depth` ne se contente plus de refuser l'imbrication** : ZipGuard descend vraiment
   dans les archives filles et rend l'arbre complet des verdicts. Quand la profondeur
@@ -314,6 +462,33 @@ Trois garde fous protègent le service lui même :
 Le plafond mémoire s'appuie sur `RLIMIT_AS` et ne s'applique qu'au worker, sous Linux et
 macOS ; `0` le désactive.
 
+### Le bac à sable du worker
+
+Avant de lire le moindre octet de l'archive, le worker s'enferme :
+
+| Couche | Ce qu'elle interdit |
+| :-- | :-- |
+| **seccomp** (Linux x86_64 et aarch64) | Réseau, lancement de programmes (`execve`), création de processus (`fork`, `clone` hors threads), signaux vers un autre processus, `ptrace`, accès à la mémoire d'autres processus, montages, modules noyau, `bpf`, espaces de noms, `io_uring` : refusés avec `EPERM` |
+| **Landlock** (Linux 5.13 et plus) | Écrire hors d'un dossier privé créé pour le worker et effacé après lui : il lit ce qu'il veut, mais n'écrit, ne crée, ne renomme et ne supprime que là |
+| **no_new_privs** | Regagner des privilèges par un exécutable setuid |
+| **Limites de ressources** | Mémoire, temps processeur, taille de fichier écrit, descripteurs ouverts, fichiers core ; les limites dures descendent avec les souples, le worker ne peut pas les relever |
+| **cgroup v2** (`--cgroup-root`) | Un cgroup jetable par worker : `memory.max`, `pids.max`, et `cgroup.kill` sur délai dépassé |
+
+```bash
+zipguard serve --sandbox strict --cgroup-root /sys/fs/cgroup/zipguard
+```
+
+`--sandbox auto` (par défaut) pose ce que le système permet et le dit ; `strict` refuse
+d'analyser s'il manque un seul élément (`500`) ; `off` ne pose rien. `GET /health` décrit
+le bac à sable configuré, et chaque réponse de `/scan` rapporte, dans `sandbox`, ce qui
+était **réellement** en place pour cette analyse.
+
+Le filtre seccomp est une **liste de refus**, pas une liste blanche : l'interpréteur Python
+fait des centaines d'appels légitimes qui varient d'une version à l'autre, et une liste
+blanche trop courte tuerait le worker sur une machine non testée. Elle vise ce qu'un
+analyseur compromis chercherait en premier. Le cgroup suppose qu'un administrateur ait
+délégué un sous arbre à l'utilisateur du service ; c'est une option, jamais un prérequis.
+
 <img src="assets/divider.svg" width="100%" alt="" />
 
 ## ⏱️ Banc d'essai
@@ -325,22 +500,32 @@ zipguard bench
 ```
   cas                       garde fou           format    verdict           temps          lu
   ---------------------------------------------------------------------------------------------
-  benigne.zip               aucun               zip       SÛRE            5.65 ms      35.0 o
-  ratio.zip                 ratio               zip       REFUSÉE         0.58 ms     3.8 MiB
-  entrees.zip               max_entries         zip       REFUSÉE         9.56 ms     500.0 o
-  imbriquee.zip             imbrication         zip       REFUSÉE         7.18 ms     3.9 KiB
-  imbriquee-profondeur.zip  max_depth           zip       REFUSÉE         0.17 ms     3.9 KiB
-  mesure.tar.gz             ratio_mesure        tar.gz    REFUSÉE         6.91 ms     3.8 MiB
-  lecture-coupee.tar.gz     plafond_de_lecture  tar.gz    REFUSÉE         3.50 ms   490.0 KiB
-  flux.txt.gz               flux_compresse      gz        REFUSÉE         5.07 ms     3.8 MiB
-  recouvrement.zip          recouvrement        zip       REFUSÉE         4.18 ms    19.1 MiB
+  benigne.zip               aucun               zip       SÛRE            0.37 ms      35.0 o
+  ratio.zip                 ratio               zip       REFUSÉE         0.15 ms     3.8 MiB
+  entrees.zip               max_entries         zip       REFUSÉE        10.26 ms     500.0 o
+  entree-unique.zip         max_entry_bytes     zip       REFUSÉE         0.13 ms     3.8 MiB
+  total.zip                 max_total_bytes     zip       REFUSÉE         0.10 ms     3.8 MiB
+  imbriquee.zip             imbrication         zip       REFUSÉE         1.32 ms     3.9 KiB
+  imbriquee-profondeur.zip  max_depth           zip       REFUSÉE         0.09 ms     3.9 KiB
+  mesure.tar.gz             ratio_mesure        tar.gz    REFUSÉE         5.41 ms     3.8 MiB
+  lecture-coupee.tar.gz     plafond_de_lecture  tar.gz    REFUSÉE         0.92 ms   490.0 KiB
+  flux.txt.gz               flux_compresse      gz        REFUSÉE         3.07 ms     3.8 MiB
+  recouvrement.zip          recouvrement        zip       REFUSÉE         0.37 ms    19.1 MiB
+  chiffree.zip              chiffrement         zip       REFUSÉE         0.06 ms       7.0 o
+  confiance.zip             confiance           zip       SÛRE            0.03 ms       0.0 o
+  pas-une-archive.txt       format              inconnu   REFUSÉE         0.05 ms       0.0 o
   ---------------------------------------------------------------------------------------------
-  12 cas, 45.2 ms au total, 0 verdict(s) inattendu(s)
+  14 cas, 22.3 ms au total, 0 verdict(s) inattendu(s)
 ```
 
 La ligne à lire est `lecture-coupee.tar.gz` : **490 Kio lus sur 3,8 Mio** avant que le
 plafond ne coupe. C'est toute la thèse du projet en un chiffre — refuser sans avoir tout
 déballé.
+
+Les deux cas de la version 2.2 se lisent ensemble : `chiffree.zip` est refusée sans qu'un
+seul octet de son contenu soit lu, et `confiance.zip`, dont le ratio ferait refuser
+n'importe quelle bombe, passe en quelques centièmes de milliseconde parce que son
+empreinte figure dans la liste de confiance.
 
 Le corpus est synthétique, borné, et reconstruit à chaque lancement : aucune archive ne
 dépasse un mégaoctet compressée, aucune ne s'imbrique au delà d'un niveau. Le banc **mesure
@@ -420,22 +605,32 @@ Les six pistes de la version 1 sont **toutes livrées** :
 | Inspection récursive bornée jusqu'à `max_depth` | ✅ arbre complet des verdicts, budget d'inspection |
 | Quota disque réel pendant l'extraction | ✅ octets recomptés + marge de disque libre, nettoyage au dépassement |
 | Mode service analysant un flux dans un worker isolé | ✅ API HTTP locale, processus jetable, délai plafonné |
-| Banc d'essai mesurant le temps avant refus | ✅ onze cas, un par garde fou, verdicts vérifiés |
+| Banc d'essai mesurant le temps avant refus | ✅ quatorze cas, un par garde fou, verdicts vérifiés |
+
+Les cinq pistes de la version 2 sont livrées à leur tour dans la 2.2 :
+
+| Piste | État |
+| :-- | :-- |
+| 🟢 Signatures de confiance par empreinte | ✅ `fingerprint`, `--trust`, format `sha256sum`, archives imbriquées comprises |
+| 🟢 Rapport SARIF pour l'onglet Sécurité | ✅ `scan --sarif`, une règle par code de refus, dossiers entiers |
+| 🟡 Inspection en flux d'une archive distante | ✅ lecture par plages HTTP, zéro écriture disque, plafond de téléchargement |
+| 🟡 Détection des archives chiffrées | ✅ zip (historique et AES) et 7z, y compris en-têtes chiffrés |
+| 🔴 Bac à sable système du worker | ✅ seccomp, no_new_privs, limites de ressources, cgroup v2 optionnel |
 
 La suite, pour qui veut continuer :
 
-- 🟢 **Signatures de confiance** : accepter une allowlist d'archives connues par empreinte.
-- 🟢 **Rapport SARIF** pour afficher les refus directement dans l'onglet Sécurité de GitHub.
-- 🟡 **Inspection en flux** d'une archive distante, sans jamais la poser sur le disque.
-- 🟡 **Détection des archives chiffrées**, qu'aucun seuil ne peut inspecter honnêtement.
-- 🔴 **Bac à sable système** (seccomp, cgroups) autour du worker d'analyse.
+- ✅ ~~Action GitHub prête à l'emploi~~ : livrée (`uses: Picsou06/zipguard@v2.2.0`).
+- ✅ ~~`scan -`, une archive lue sur l'entrée standard~~ : livré.
+- 🟡 **Liste blanche seccomp** générée en traçant les appels réels du worker, plus stricte
+  que la liste de refus actuelle.
+- 🔴 **Formats `rar` et `zstd`**, derrière le même adaptateur et les mêmes seuils.
 
 ## 🧪 Tests
 
 ```bash
 cd zipguard.app
 pip install -r requirements-dev.txt
-pytest -q                         # 190 tests
+pytest -q                         # 283 tests
 pytest -q --cov=zipguard          # avec la couverture
 ruff check .                      # style et erreurs courantes
 ```
@@ -473,7 +668,7 @@ seule fois :
 Ensuite, monter la version dans `pyproject.toml` et `__init__.py`, puis :
 
 ```bash
-git tag v2.1.0 && git push origin v2.1.0
+git tag v2.2.0 && git push origin v2.2.0
 ```
 
 Le workflow refuse une étiquette qui ne correspond pas à la version du paquet.

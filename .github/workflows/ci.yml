@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Toutes les PR, pas seulement celles qui visent main : une PR empilée sur une autre doit
+  # être vérifiée elle aussi.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -83,6 +84,56 @@ jobs:
 
       - name: Run the guard bench
         run: zipguard bench --repeat 1 --json
+
+  # L'action du dépôt est testée comme un utilisateur l'emploierait : uses: ./ sur un
+  # dossier contenant une bombe bornée et une archive saine.
+  action:
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a fixture
+        run: |
+          mkdir -p fixture/lib
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("fixture/lib/bombe.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+              archive.writestr("a.txt", b"A" * 2_000_000)
+          with zipfile.ZipFile("fixture/lib/ok.zip", "w") as archive:
+              archive.writestr("a.txt", b"bonjour")
+          PY
+
+      - name: Run the action
+        id: zipguard
+        uses: ./
+        with:
+          path: fixture
+          upload: "false"
+
+      - name: Check its outputs
+        env:
+          FINDINGS: ${{ steps.zipguard.outputs.findings }}
+          UNSAFE: ${{ steps.zipguard.outputs.unsafe }}
+        run: |
+          test "$UNSAFE" = "true"
+          test "$FINDINGS" = "1"
+          grep -q '"uri": "fixture/lib/bombe.zip"' zipguard.sarif
+
+      - name: Run the action with fail-on-findings
+        id: strict
+        continue-on-error: true
+        uses: ./
+        with:
+          path: fixture
+          upload: "false"
+          fail-on-findings: "true"
+          sarif-file: strict.sarif
+
+      - name: Check that it failed
+        env:
+          OUTCOME: ${{ steps.strict.outcome }}
+        run: test "$OUTCOME" = "failure"
 
   # Le badge de couverture vit dans une branche à part, réécrite à chaque passage sur main :
   # aucun service externe, et l'historique de main ne se remplit pas de commits de robot.

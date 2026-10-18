@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from .sources import FileSource, Source, as_source
+
 DEFAULT_READ_CAP = 1_000_000_000
 
 _TAR_MAGIC_OFFSET = 257
@@ -34,6 +36,15 @@ class UnsupportedArchive(Exception):
 	Usage: levée par open_archive sur un fichier qui n'est pas une archive connue.
 	Inputs: message (str) décrivant le fichier refusé.
 	Outputs: exception à récupérer par l'appelant.
+	"""
+
+
+class EncryptedArchive(Exception):
+	"""
+	Description: Signale une archive dont même la liste des entrées est chiffrée.
+	Usage: levée à l'ouverture d'un 7z à en-têtes chiffrés.
+	Inputs: message (str) description.
+	Outputs: exception que le scanner traduit en verdict « chiffrée ».
 	"""
 
 
@@ -72,7 +83,7 @@ class Entry:
 	"""
 	Description: Entrée d'archive normalisée, commune à tous les formats pris en charge.
 	Usage: for entry in archive.entries(): print(entry.name, entry.size).
-	Inputs: name (str), size (int) octets décompressés, compressed_size (int) 0 si inconnu, is_dir (bool), is_link (bool), is_hardlink (bool), link_target (str) cible d'un lien tar.
+	Inputs: name (str), size (int) octets décompressés, compressed_size (int) 0 si inconnu, is_dir (bool), is_link (bool), is_hardlink (bool), link_target (str) cible d'un lien tar, is_encrypted (bool).
 	Outputs: structure immuable comparable d'un format à l'autre.
 
 	is_link couvre les liens symboliques comme les liens physiques ; is_hardlink distingue
@@ -87,6 +98,7 @@ class Entry:
 	is_link: bool = False
 	is_hardlink: bool = False
 	link_target: str = ""
+	is_encrypted: bool = False
 
 	@property
 	def ratio(self) -> float:
@@ -138,15 +150,76 @@ class _CappedReader(io.RawIOBase):
 			super().close()
 
 
-def _head(path: Path, size: int = 1024) -> bytes:
+class _Owning(io.RawIOBase):
 	"""
-	Description: Lit les premiers octets d'un fichier pour reconnaître sa signature.
-	Usage: _head(Path("a.zip")).
-	Inputs: path (Path) fichier à renifler, size (int) nombre d'octets à lire.
+	Description: Flux de décompression qui referme aussi le flux brut qu'il lit.
+	Usage: interne à _open_codec.
+	Inputs: stream (IO[bytes]) flux décompressé, raw (IO[bytes]) flux brut sous jacent.
+	Outputs: objet fichier lisible ; le refermer referme les deux.
+
+	gzip, bz2 et lzma ne referment pas un objet fichier qu'on leur a confié : sans cette
+	enveloppe, chaque lecture d'une archive distante laisserait une connexion ouverte.
+	"""
+
+	def __init__(self, stream: IO[bytes], raw: IO[bytes]) -> None:
+		super().__init__()
+		self._stream = stream
+		self._raw = raw
+
+	def readable(self) -> bool:
+		return True
+
+	def read(self, size: int = -1) -> bytes:
+		return self._stream.read(size)
+
+	def readinto(self, buffer) -> int:  # pragma: no cover - utilisé par io.BufferedReader
+		chunk = self.read(len(buffer))
+		buffer[: len(chunk)] = chunk
+		return len(chunk)
+
+	def close(self) -> None:
+		try:
+			self._stream.close()
+		finally:
+			try:
+				self._raw.close()
+			finally:
+				super().close()
+
+
+def _open_codec(source: Source, codec: str) -> IO[bytes]:
+	"""
+	Description: Ouvre une source et la décompresse au vol selon le codec demandé.
+	Usage: _open_codec(source, "gz").
+	Inputs: source (Source) archive, codec (str) gz, bz2, xz, ou none pour le flux brut.
+	Outputs: objet fichier binaire décompressé, à refermer par l'appelant.
+	"""
+
+	raw = source.open()
+	if codec == "none":
+		return raw
+	try:
+		if codec == "gz":
+			stream: IO[bytes] = gzip.GzipFile(fileobj=raw, mode="rb")
+		elif codec == "bz2":
+			stream = bz2.BZ2File(raw)
+		else:
+			stream = lzma.LZMAFile(raw)
+	except BaseException:
+		raw.close()
+		raise
+	return _Owning(stream, raw)
+
+
+def _head(source: Source, size: int = 1024) -> bytes:
+	"""
+	Description: Lit les premiers octets d'une source pour reconnaître sa signature.
+	Usage: _head(FileSource(Path("a.zip"))).
+	Inputs: source (Source) archive à renifler, size (int) nombre d'octets à lire.
 	Outputs: bytes lus, éventuellement plus courts que demandé.
 	"""
 
-	with open(path, "rb") as handle:
+	with source.open() as handle:
 		return handle.read(size)
 
 
@@ -161,20 +234,19 @@ def _looks_like_tar(blob: bytes) -> bool:
 	return blob[_TAR_MAGIC_OFFSET : _TAR_MAGIC_OFFSET + len(_TAR_MAGIC)] == _TAR_MAGIC
 
 
-def _peek_decompressed(path: Path, codec: str, size: int = 512) -> bytes:
+def _peek_decompressed(source: Source, codec: str, size: int = 512) -> bytes:
 	"""
 	Description: Décompresse un tout petit morceau d'un flux pour voir ce qu'il contient.
-	Usage: _peek_decompressed(Path("a.tar.gz"), "gz").
-	Inputs: path (Path) fichier compressé, codec (str) gz, bz2 ou xz, size (int) octets voulus.
+	Usage: _peek_decompressed(source, "gz").
+	Inputs: source (Source) archive compressée, codec (str) gz, bz2 ou xz, size (int) octets voulus.
 	Outputs: bytes décompressés, vides si le flux est illisible.
 
 	La lecture est volontairement minuscule : reconnaître un format ne doit jamais coûter
 	une décompression complète.
 	"""
 
-	opener = {"gz": gzip.open, "bz2": bz2.open, "xz": lzma.open}[codec]
 	try:
-		with opener(path, "rb") as stream:  # type: ignore[operator]
+		with _open_codec(source, codec) as stream:
 			return stream.read(size)
 	except (OSError, EOFError, gzip.BadGzipFile, lzma.LZMAError):
 		return b""
@@ -209,28 +281,31 @@ def sniff_kind(blob: bytes) -> str | None:
 	return None
 
 
-def detect_kind(path: Path) -> str | None:
+def detect_kind(target: Source | Path) -> str | None:
 	"""
-	Description: Reconnaît le format d'un fichier par sa signature, jamais par son extension.
+	Description: Reconnaît le format d'une archive par sa signature, jamais par son extension.
 	Usage: detect_kind(Path("suspect.bin")).
-	Inputs: path (Path) fichier à examiner.
+	Inputs: target (Source | Path) archive à examiner.
 	Outputs: str parmi zip, tar, tar.gz, tar.bz2, tar.xz, gz, bz2, xz, 7z, ou None.
 
 	Une archive renommée en .txt reste une archive : se fier à l'extension serait le premier
 	trou dans la défense.
 	"""
 
-	path = Path(path)
-	if not path.is_file():
+	source = as_source(target)
+	if not source.exists():
 		return None
 
-	head = _head(path)
+	head = _head(source)
 	kind = sniff_kind(head)
 
 	if kind is None:
-		return "zip" if zipfile.is_zipfile(path) else None
+		if not source.seekable:
+			return None
+		with source.open() as stream:
+			return "zip" if zipfile.is_zipfile(stream) else None
 	if kind in STREAM_KINDS:
-		return f"tar.{kind}" if _looks_like_tar(_peek_decompressed(path, kind)) else kind
+		return f"tar.{kind}" if _looks_like_tar(_peek_decompressed(source, kind)) else kind
 	return kind
 
 
@@ -238,14 +313,24 @@ class Archive:
 	"""
 	Description: Interface commune d'inspection, identique quel que soit le format d'archive.
 	Usage: with open_archive(path) as handle: handle.entries().
-	Inputs: path (Path) archive, kind (str) format détecté, read_cap (int) plafond de lecture.
+	Inputs: source (Source) origine des octets, kind (str) format détecté, read_cap (int) plafond de lecture, memory_cap (int | None) plafond d'une entrée tenue en mémoire.
 	Outputs: objet exposant entries(), open() et compressed_total.
 	"""
 
-	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		self.path = Path(path)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		self.source = source
 		self.kind = kind
 		self.read_cap = read_cap
+		self.memory_cap = read_cap if memory_cap is None else min(read_cap, memory_cap)
+		# Entrées qu'un plafond a empêché de renifler : le scanner ne peut pas savoir si ce
+		# sont des archives, donc il doit les compter comme invérifiables.
+		self.unsniffable: list[str] = []
 		self._entries: list[Entry] | None = None
 		self._measured = False
 
@@ -258,7 +343,7 @@ class Archive:
 		Outputs: int octets, au minimum 1 pour éviter une division par zéro.
 		"""
 
-		return max(1, self.path.stat().st_size)
+		return max(1, self.source.size())
 
 	@property
 	def sizes_are_measured(self) -> bool:
@@ -306,10 +391,13 @@ class Archive:
 		outil défensif, planter sur l'entrée hostile est le pire mode de défaillance.
 		"""
 
-		if entry.is_dir or entry.is_link or entry.size <= 0:
+		if entry.is_dir or entry.is_link or entry.is_encrypted or entry.size <= 0:
 			return b""
 		try:
 			stream = self.open(entry)
+		except ReadCapExceeded:
+			self.unsniffable.append(entry.name)
+			return b""
 		except SNIFF_ERRORS:
 			return b""
 		try:
@@ -356,9 +444,20 @@ class ZipArchive(Archive):
 	Outputs: entrées issues du répertoire central du ZIP.
 	"""
 
-	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(path, kind, read_cap)
-		self._zip = zipfile.ZipFile(self.path)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
+		self._raw = source.open()
+		try:
+			self._zip = zipfile.ZipFile(self._raw)
+		except BaseException:
+			self._raw.close()
+			raise
 
 	@property
 	def compressed_total(self) -> int:
@@ -376,7 +475,7 @@ class ZipArchive(Archive):
 		"""
 
 		declared = sum(info.compress_size for info in self._zip.infolist())
-		real = self.path.stat().st_size
+		real = self.source.size()
 		return max(1, min(declared, real) if declared else real)
 
 	@staticmethod
@@ -398,6 +497,8 @@ class ZipArchive(Archive):
 				compressed_size=info.compress_size,
 				is_dir=info.is_dir(),
 				is_link=self._is_symlink(info),
+				# Le bit 0 des drapeaux couvre le chiffrement historique comme AES.
+				is_encrypted=bool(info.flag_bits & 0x1),
 			)
 			for info in self._zip.infolist()
 		]
@@ -437,7 +538,10 @@ class ZipArchive(Archive):
 		return raw.decode("utf-8")
 
 	def close(self) -> None:
-		self._zip.close()
+		try:
+			self._zip.close()
+		finally:
+			self._raw.close()
 
 
 class TarArchive(Archive):
@@ -452,8 +556,14 @@ class TarArchive(Archive):
 	ce qui transforme l'inventaire lui même en garde fou.
 	"""
 
-	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(path, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		self._measured = True
 		self._open_streams: list[IO[bytes]] = []
 		self._heads: dict[str, bytes] = {}
@@ -463,13 +573,7 @@ class TarArchive(Archive):
 		return self.kind.partition(".")[2] or "none"
 
 	def _stream(self) -> _CappedReader:
-		openers = {
-			"gz": lambda: gzip.open(self.path, "rb"),
-			"bz2": lambda: bz2.open(self.path, "rb"),
-			"xz": lambda: lzma.open(self.path, "rb"),
-			"none": lambda: open(self.path, "rb"),
-		}
-		return _CappedReader(openers[self._codec](), self.read_cap)
+		return _CappedReader(_open_codec(self.source, self._codec), self.read_cap)
 
 	def _read_entries(self) -> list[Entry]:
 		entries: list[Entry] = []
@@ -519,7 +623,7 @@ class TarArchive(Archive):
 				extracted = archive.extractfile(member)
 				if extracted is None:
 					break
-				self._open_streams.append(extracted)
+				self._open_streams.extend((extracted, reader))
 				return extracted
 		archive.close()
 		reader.close()
@@ -543,21 +647,22 @@ class StreamArchive(Archive):
 	au delà : la seule valeur digne de confiance est celle que l'on compte soi même.
 	"""
 
-	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(path, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		self._measured = True
 
 	def _raw_stream(self) -> IO[bytes]:
-		openers = {
-			"gz": lambda: gzip.open(self.path, "rb"),
-			"bz2": lambda: bz2.open(self.path, "rb"),
-			"xz": lambda: lzma.open(self.path, "rb"),
-		}
-		return openers[self.kind]()  # type: ignore[return-value]
+		return _open_codec(self.source, self.kind)
 
 	@property
 	def _inner_name(self) -> str:
-		name = self.path.name
+		name = self.source.name
 		suffix = f".{self.kind}"
 		return name[: -len(suffix)] if name.endswith(suffix) else f"{name}.decompresse"
 
@@ -576,7 +681,7 @@ class StreamArchive(Archive):
 			Entry(
 				name=self._inner_name,
 				size=measured,
-				compressed_size=self.path.stat().st_size,
+				compressed_size=self.source.size(),
 			)
 		]
 
@@ -592,15 +697,23 @@ class SevenZipArchive(Archive):
 	Outputs: entrées issues du manifeste 7z.
 
 	Limite de confiance à connaître : py7zr ne sait pas rendre une entrée sous forme de flux
-	borné, il ne sait que l'écrire sur le disque. Lire une entrée passe donc par un dossier
-	temporaire privé. La taille annoncée est vérifiée avant l'extraction, et la taille
-	réelle après : un manifeste menteur est donc détecté, mais seulement une fois l'entrée
-	écrite. L'exposition est bornée à une entrée à la fois et le dossier est effacé à la
-	fermeture. Les autres formats n'ont pas ce détour, parce qu'ils savent se lire par blocs.
+	borné. Pour une source sur disque, lire une entrée passe par un dossier temporaire
+	privé ; pour une source sans disque (archive distante, archive imbriquée lue en
+	mémoire), l'entrée est décompressée dans un tampon mémoire plafonné. Dans les deux cas
+	la taille annoncée est vérifiée avant, et la taille réelle après : un manifeste menteur
+	est détecté, mais seulement une fois l'entrée décompressée. L'exposition est bornée à
+	une entrée à la fois. Les autres formats n'ont pas ce détour, parce qu'ils savent se
+	lire par blocs.
 	"""
 
-	def __init__(self, path: Path, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(path, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		try:
 			import py7zr
 		except ImportError as error:  # pragma: no cover - dépend de l'environnement
@@ -608,19 +721,37 @@ class SevenZipArchive(Archive):
 				'Archive 7z détectée : installe la dépendance optionnelle avec pip install "zipguard[7z]".'
 			) from error
 		self._py7zr = py7zr
-		self._archive = py7zr.SevenZipFile(self.path, mode="r")
+		self._raw = None if isinstance(source, FileSource) else source.open()
+		try:
+			target = source.path if isinstance(source, FileSource) else self._raw
+			self._archive = py7zr.SevenZipFile(target, mode="r")
+		except py7zr.exceptions.PasswordRequired as error:
+			self._close_raw()
+			raise EncryptedArchive(
+				"Archive 7z à en-têtes chiffrés : même la liste des entrées est illisible."
+			) from error
+		except BaseException:
+			self._close_raw()
+			raise
+		self._encrypted = bool(self._archive.needs_password())
 		self._workdirs: list[Path] = []
+
+	def _close_raw(self) -> None:
+		if self._raw is not None:
+			self._raw.close()
 
 	def _read_entries(self) -> list[Entry]:
 		entries: list[Entry] = []
 		for info in self._archive.list():
+			is_dir = bool(getattr(info, "is_directory", False))
 			entries.append(
 				Entry(
 					name=info.filename,
 					size=int(getattr(info, "uncompressed", 0) or 0),
 					compressed_size=int(getattr(info, "compressed", 0) or 0),
-					is_dir=bool(getattr(info, "is_directory", False)),
+					is_dir=is_dir,
 					is_link=bool(getattr(info, "is_symlink", False)),
+					is_encrypted=self._encrypted and not is_dir,
 				)
 			)
 		return entries
@@ -628,17 +759,23 @@ class SevenZipArchive(Archive):
 	def open(self, entry: Entry) -> IO[bytes]:
 		if entry.size > self.read_cap:
 			raise ReadCapExceeded(self.read_cap, entry.size)
+		if self.source.on_disk:
+			return self._open_on_disk(entry)
+		return self._open_in_memory(entry)
 
-		workdir = Path(tempfile.mkdtemp(prefix="zipguard-7z-"))
-		self._workdirs.append(workdir)
-
+	def _extract(self, entry: Entry, **options) -> None:
 		self._archive.reset()
 		try:
-			self._archive.extract(path=workdir, targets=[entry.name])
+			self._archive.extract(targets=[entry.name], **options)
 		except self._py7zr.exceptions.ArchiveError as error:
 			# py7zr a ses propres exceptions : on les ramène à une erreur de lecture connue
 			# pour qu'une entrée trafiquée produise un verdict et non une trace.
 			raise ValueError(f"Entrée 7z illisible : {error}") from error
+
+	def _open_on_disk(self, entry: Entry) -> IO[bytes]:
+		workdir = Path(tempfile.mkdtemp(prefix="zipguard-7z-"))
+		self._workdirs.append(workdir)
+		self._extract(entry, path=workdir)
 
 		extracted = workdir / entry.name
 		if not extracted.is_file():
@@ -653,38 +790,69 @@ class SevenZipArchive(Archive):
 
 		return open(extracted, "rb")
 
+	def _open_in_memory(self, entry: Entry) -> IO[bytes]:
+		# Le tampon de py7zr ignore en silence ce qui dépasse sa limite : on lui donne un
+		# octet de marge, et un tampon plein jusqu'à elle signe une entrée trop grosse. La
+		# limite est celle de la mémoire, plus serrée que le plafond de lecture.
+		if entry.size > self.memory_cap:
+			raise ReadCapExceeded(self.memory_cap, entry.size)
+		factory = self._py7zr.io.BytesIOFactory(self.memory_cap + 1)
+		self._extract(entry, factory=factory)
+		try:
+			product = factory.get(entry.name)
+		except KeyError as error:
+			raise KeyError(f"Entrée introuvable dans l'archive : {entry.name}") from error
+
+		actual = product.size()
+		if actual > self.memory_cap:
+			raise ReadCapExceeded(self.memory_cap, actual)
+		product.seek(0)
+		return io.BytesIO(product.read())
+
 	def close(self) -> None:
 		try:
 			self._archive.close()
 		finally:
+			self._close_raw()
 			for workdir in self._workdirs:
 				shutil.rmtree(workdir, ignore_errors=True)
 			self._workdirs.clear()
 
 
-def open_archive(path: Path, read_cap: int = DEFAULT_READ_CAP) -> Archive:
+def open_archive(
+	target: Source | Path,
+	read_cap: int = DEFAULT_READ_CAP,
+	memory_cap: int | None = None,
+) -> Archive:
 	"""
 	Description: Ouvre n'importe quelle archive prise en charge derrière une interface unique.
 	Usage: with open_archive(Path("a.tar.gz"), read_cap=1_000_000) as handle: handle.entries().
-	Inputs: path (Path) archive, read_cap (int) plafond d'octets décompressés lus.
+	Inputs: target (Source | Path) archive, read_cap (int) plafond d'octets décompressés lus, memory_cap (int | None) plafond d'une entrée décompressée en mémoire.
 	Outputs: Archive adaptée au format détecté.
 
-	Lève UnsupportedArchive quand la signature n'est reconnue par aucun adaptateur.
+	Lève UnsupportedArchive quand la signature n'est reconnue par aucun adaptateur, et
+	EncryptedArchive quand le format chiffre jusqu'à sa liste d'entrées.
 	"""
 
-	path = Path(path)
-	kind = detect_kind(path)
+	source = as_source(target)
+	kind = detect_kind(source)
 	if kind is None:
-		raise UnsupportedArchive(f"Format non reconnu ou fichier illisible : {path}")
+		raise UnsupportedArchive(f"Format non reconnu ou fichier illisible : {source.name}")
+
+	if kind in ("zip", "7z") and not source.seekable:
+		raise UnsupportedArchive(
+			f"Archive {kind} illisible en flux continu : son manifeste est en fin de fichier "
+			"et le serveur ne permet pas la lecture par plages."
+		)
 
 	if kind == "zip":
-		return ZipArchive(path, kind, read_cap)
+		return ZipArchive(source, kind, read_cap, memory_cap)
 	if kind in TAR_KINDS:
-		return TarArchive(path, kind, read_cap)
+		return TarArchive(source, kind, read_cap, memory_cap)
 	if kind in STREAM_KINDS:
-		return StreamArchive(path, kind, read_cap)
+		return StreamArchive(source, kind, read_cap, memory_cap)
 	if kind == "7z":
-		return SevenZipArchive(path, kind, read_cap)
+		return SevenZipArchive(source, kind, read_cap, memory_cap)
 
 	raise UnsupportedArchive(f"Format non pris en charge : {kind}")  # pragma: no cover
 

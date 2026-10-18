@@ -2,11 +2,13 @@
 
 La règle d'or : **ne jamais faire confiance aux métadonnées, toujours mesurer en lisant.**
 
-## Les huit garde fous
+## Les onze garde fous
 
 Les six premiers décident du **verdict**, à partir de ce que l'archive raconte et de ce
-qu'on mesure en la lisant. Les deux derniers protègent le **disque** pendant l'écriture,
-une fois le verdict rendu, parce qu'un verdict favorable n'est pas un blanc seing.
+qu'on mesure en la lisant. Les deux suivants protègent le **disque** pendant l'écriture,
+une fois le verdict rendu, parce qu'un verdict favorable n'est pas un blanc seing. Le
+neuvième refuse ce qu'on ne peut pas lire, et les deux derniers bornent l'inspection d'une
+archive distante.
 
 1. **Plafond de taille décompressée totale.** Additionner les tailles annoncées et refuser
    au delà d'un seuil. ZipGuard : `max_total_bytes`.
@@ -24,6 +26,13 @@ une fois le verdict rendu, parce qu'un verdict favorable n'est pas un blanc sein
    ZipGuard : `max_extract_bytes`.
 8. **Marge d'espace libre exigée.** Refuser de commencer, et s'arrêter en cours, si le
    disque descend sous un plancher. ZipGuard : `min_free_bytes`.
+9. **Refus des archives chiffrées.** Ce qu'on ne peut pas lire, on ne peut pas le juger.
+10. **Mémoire accordée à une archive imbriquée lue sans disque.** ZipGuard :
+    `max_buffer_bytes`.
+11. **Plafond de téléchargement d'une archive distante.** ZipGuard : `max_download_bytes`.
+
+Chaque refus porte en plus de sa phrase un **code stable** (`ratio`, `encrypted`,
+`nested`...), repris par la sortie JSON et par le rapport SARIF.
 
 ## Pourquoi mesurer pendant la lecture
 
@@ -116,6 +125,65 @@ Deux autres pièges sont arrêtés au même endroit :
 Tous ces contrôles ont lieu **pendant une passe de validation préalable**, donc avant la
 première écriture : une archive piégée ne laisse aucune trace sur le disque.
 
+## Les archives chiffrées
+
+Un zip chiffré garde son répertoire central en clair : on y lit des noms et des tailles.
+C'est précisément le piège. Ces tailles sont déclaratives, et pour les vérifier il faudrait
+décompresser, donc déchiffrer. Une archive chiffrée qui annonce 1 Mo peut en contenir
+10 Go, et une archive imbriquée cachée dedans ne sera jamais reniflée.
+
+ZipGuard refuse donc toute archive dont une seule entrée est chiffrée. Côté zip, c'est le
+bit 0 des drapeaux de chaque entrée, qui couvre le chiffrement historique comme AES ; côté
+7z, `py7zr` dit si l'archive demande un mot de passe, et un 7z à en-têtes chiffrés, dont
+même la liste est illisible, est refusé dès l'ouverture. À l'extraction, une entrée
+chiffrée est refusée dans tous les cas, même pour une archive de confiance.
+
+C'était aussi un plantage : avant la version 2.2, ouvrir une entrée chiffrée pour en lire
+la signature levait une exception que rien ne rattrapait. Pour un outil défensif, planter
+sur l'entrée hostile est le pire mode de défaillance.
+
+## Faire confiance, mais à une empreinte
+
+Certaines archives légitimes ont un ratio qui ferait refuser n'importe quelle bombe : un
+export de base de données plein de zéros, une image disque vide. Relâcher `max_ratio` pour
+elles le relâcherait pour tout le monde. La bonne granularité est l'archive elle même,
+désignée par son **empreinte SHA-256** : `zipguard fingerprint` la calcule, au format de
+`sha256sum`, et `--trust` lit la liste.
+
+Trois règles encadrent cette confiance :
+
+- elle porte sur les octets exacts : un seul octet changé, et l'archive redevient une
+  inconnue ;
+- elle lève le verdict, pas les quotas : l'extraction recompte toujours chaque octet ;
+- elle s'applique à la copie privée que l'extraction vient de faire, si bien qu'on ne
+  peut pas faire approuver un fichier et en extraire un autre.
+
+## Inspecter sans télécharger
+
+Une archive distante n'a pas besoin d'être posée sur le disque pour être jugée. Un zip
+range son manifeste à la fin : une requête HTTP par plage sur la fin du fichier, puis une
+par entrée pour en lire la signature, suffisent. Les archives imbriquées sont lues en
+mémoire, sous un plafond dédié (`max_buffer_bytes`), et le volume total téléchargé a le
+sien (`max_download_bytes`), qui devient la raison du refus quand il coupe.
+
+Ce mode refuse plutôt que de deviner : un serveur qui n'annonce pas la taille du fichier
+prive le ratio de son dénominateur, et un serveur qui recompresse à la volée servirait des
+octets qui ne sont pas ceux de l'archive. Il se méfie aussi du serveur lui même : seules
+les redirections vers http et https sont suivies, chaque plage porte `If-Range` pour
+qu'un fichier modifié en cours de route arrête l'inspection, et un délai total coupe un
+serveur qui enverrait un octet juste avant chaque délai par requête.
+
+`zipguard scan -` applique la même règle à l'entrée standard : recueillie en mémoire, sous
+le même plafond, jamais écrite sur le disque.
+
+## Ce que l'archive écrit dans le terminal
+
+Un nom d'entrée est choisi par l'auteur de l'archive, et un outil qui l'affiche tel quel
+lui prête son terminal. Une séquence ANSI peut effacer la ligne du verdict et en dessiner
+une fausse ; un caractère d'inversion de sens (U+202E) peut faire lire `txt.exe` comme
+`exe.txt`. ZipGuard affiche donc tout caractère de contrôle ou de mise en forme venu
+d'une archive en échappement visible, dans le rapport, les erreurs et le SARIF.
+
 ## En production
 
 - Décompresser dans un bac à sable isolé (conteneur en lecture seule, quota disque).
@@ -126,6 +194,13 @@ première écriture : une archive piégée ne laisse aucune trace sur le disque.
 - Plafonner la mémoire du worker, pas seulement son temps : un délai ne protège pas d'une
   allocation géante. `zipguard serve` pose un `RLIMIT_AS` (`--max-memory-mb`) et rend un
   verdict DANGEREUSE quand il est atteint.
+- Enfermer le worker : un analyseur d'archives est du code qui lit des données hostiles,
+  et la question n'est pas de savoir s'il aura un jour une faille, mais ce qu'elle
+  permettra. Sous seccomp, un worker compromis ne peut ni ouvrir le réseau, ni lancer un
+  programme, ni créer un processus, ni signaler ou observer un autre processus ; sous
+  Landlock, il n'écrit que dans son propre dossier ; sous ses limites de ressources, il
+  ne peut ni remplir le disque ni la mémoire. `zipguard serve --sandbox strict` refuse d'analyser
+  si l'une de ces couches manque.
 - Protéger le service lui même : un délai sur chaque lecture réseau contre les envois au
   compte goutte, et un nombre borné d'analyses simultanées (`--read-timeout`,
   `--max-concurrent`).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -10,10 +11,14 @@ from pathlib import Path
 from . import __version__
 from .bench import bench_json, build_corpus, render_bench, run_bench
 from .demo import FORMATS, build_demo_archive
-from .formats import supported_kinds
-from .limits import Limits, human_bytes
-from .report import render, render_json
+from .formats import detect_kind, supported_kinds
+from .limits import Limits, Verdict, human_bytes
+from .remote import RemoteSource, is_url, redact_url
+from .report import printable, render, render_json
+from .sarif import render_sarif
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
+from .sources import MemorySource
+from .trust import fingerprint, load_allowlist
 
 EXIT_OK = 0
 EXIT_UNSAFE = 1
@@ -44,6 +49,40 @@ def _add_threshold_flags(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument("--max-depth", type=int, default=defaults.max_depth)
 
 
+def _add_trust_flag(parser: argparse.ArgumentParser) -> None:
+	"""
+	Description: Ajoute l'option qui charge une liste d'empreintes de confiance.
+	Usage: _add_trust_flag(scan_parser).
+	Inputs: parser (ArgumentParser) sous commande à enrichir.
+	Outputs: None, le parser est modifié sur place.
+	"""
+
+	parser.add_argument(
+		"--trust",
+		type=Path,
+		default=None,
+		metavar="FICHIER",
+		help="Liste d'empreintes SHA-256 de confiance, au format de sha256sum.",
+	)
+
+
+def _trusted_from(args: argparse.Namespace) -> frozenset[str] | None:
+	"""
+	Description: Charge la liste de confiance demandée, ou signale pourquoi elle est illisible.
+	Usage: trusted = _trusted_from(args).
+	Inputs: args (Namespace) options analysées.
+	Outputs: frozenset[str] des empreintes, vide sans --trust ; None si le fichier est invalide.
+	"""
+
+	if args.trust is None:
+		return frozenset()
+	try:
+		return load_allowlist(args.trust)
+	except (OSError, ValueError) as error:
+		print(f"zipguard: liste de confiance illisible : {error}", file=sys.stderr)
+		return None
+
+
 def _add_render_flags(parser: argparse.ArgumentParser) -> None:
 	"""
 	Description: Ajoute les options de mise en forme de la sortie.
@@ -70,6 +109,8 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 	defaults = Limits()
 	extract_mb = getattr(args, "max_extract_mb", None)
 	free_mb = getattr(args, "min_free_mb", None)
+	buffer_mb = getattr(args, "max_buffer_mb", None)
+	download_mb = getattr(args, "max_download_mb", None)
 
 	return Limits(
 		max_total_bytes=args.max_total_mb * 1_000_000,
@@ -79,6 +120,10 @@ def _limits_from(args: argparse.Namespace) -> Limits:
 		max_depth=args.max_depth,
 		max_extract_bytes=(defaults.max_extract_bytes if extract_mb is None else extract_mb * 1_000_000),
 		min_free_bytes=(defaults.min_free_bytes if free_mb is None else free_mb * 1_000_000),
+		max_buffer_bytes=(defaults.max_buffer_bytes if buffer_mb is None else buffer_mb * 1_000_000),
+		max_download_bytes=(
+			defaults.max_download_bytes if download_mb is None else download_mb * 1_000_000
+		),
 	)
 
 
@@ -113,15 +158,64 @@ def _build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--version", action="version", version=f"zipguard {__version__}")
 	sub = parser.add_subparsers(dest="command", required=True)
 
-	scan = sub.add_parser("scan", help="Inspecte une archive et rend un verdict.")
-	scan.add_argument("archive", type=Path)
+	scan = sub.add_parser(
+		"scan",
+		help="Inspecte une ou plusieurs archives, ou tout un dossier, et rend un verdict.",
+	)
+	scan.add_argument(
+		"targets",
+		nargs="+",
+		metavar="ARCHIVE",
+		help=(
+			"Archive, dossier, adresse http(s), ou - pour l'entrée standard. Un dossier est "
+			"parcouru et chaque archive reconnue est inspectée ; une adresse ou l'entrée "
+			"standard sont lues sans rien écrire sur le disque."
+		),
+	)
 	_add_threshold_flags(scan)
+	_add_trust_flag(scan)
 	_add_render_flags(scan)
+	scan.add_argument(
+		"--sarif",
+		action="store_true",
+		help="Sortie SARIF 2.1.0, pour l'onglet Sécurité de GitHub.",
+	)
+	defaults = Limits()
+	scan.add_argument(
+		"--max-download-mb",
+		type=int,
+		default=defaults.max_download_bytes // 1_000_000,
+		help="Plafond de téléchargement pour une archive distante.",
+	)
+	scan.add_argument(
+		"--max-buffer-mb",
+		type=int,
+		default=defaults.max_buffer_bytes // 1_000_000,
+		help="Mémoire accordée à chaque archive imbriquée lue sans disque.",
+	)
+	scan.add_argument(
+		"--remote-timeout",
+		type=float,
+		default=30.0,
+		help="Délai de chaque requête vers une archive distante, en secondes.",
+	)
+	scan.add_argument(
+		"--remote-deadline",
+		type=float,
+		default=300.0,
+		help="Délai total de l'inspection d'une archive distante, en secondes.",
+	)
+	scan.add_argument(
+		"--exit-zero",
+		action="store_true",
+		help="Rend 0 même si une archive est dangereuse (utile pour publier un rapport en CI).",
+	)
 
 	extract = sub.add_parser("extract", help="Extrait une archive jugée sûre, en comptant les octets.")
 	extract.add_argument("archive", type=Path)
 	extract.add_argument("destination", type=Path)
 	_add_threshold_flags(extract)
+	_add_trust_flag(extract)
 	_add_render_flags(extract)
 	extract.add_argument("--max-extract-mb", type=int, default=None)
 	extract.add_argument("--min-free-mb", type=int, default=None)
@@ -158,11 +252,27 @@ def _build_parser() -> argparse.ArgumentParser:
 		help="Plafond mémoire de chaque worker, 0 pour aucun (Linux et macOS).",
 	)
 	serve.add_argument(
+		"--sandbox",
+		choices=("auto", "strict", "off"),
+		default="auto",
+		help=(
+			"Bac à sable du worker : auto pose ce que le système permet, strict refuse "
+			"d'analyser s'il manque un élément, off ne pose rien."
+		),
+	)
+	serve.add_argument(
+		"--cgroup-root",
+		default=None,
+		metavar="DOSSIER",
+		help="Cgroup v2 délégué où créer un cgroup jetable par worker.",
+	)
+	serve.add_argument(
 		"--no-isolate",
 		action="store_true",
 		help="Analyse dans le processus du serveur au lieu d'un worker jetable.",
 	)
 	_add_threshold_flags(serve)
+	_add_trust_flag(serve)
 
 	bench = sub.add_parser("bench", help="Mesure le temps que met chaque garde fou à trancher.")
 	bench.add_argument("--repeat", type=int, default=3)
@@ -171,7 +281,138 @@ def _build_parser() -> argparse.ArgumentParser:
 
 	sub.add_parser("formats", help="Liste les formats d'archive pris en charge.")
 
+	prints = sub.add_parser(
+		"fingerprint",
+		help="Affiche l'empreinte SHA-256 d'archives, prête pour une liste --trust.",
+	)
+	prints.add_argument("archives", type=Path, nargs="+")
+
 	return parser
+
+
+_SKIPPED_DIRECTORIES = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv"}
+
+
+def _walk_archives(directory: Path) -> list[Path]:
+	"""
+	Description: Liste les archives d'un dossier, reconnues par signature.
+	Usage: _walk_archives(Path(".")).
+	Inputs: directory (Path) dossier à parcourir.
+	Outputs: list[Path] triée des fichiers qui sont des archives.
+
+	Les liens symboliques ne sont pas suivis, et les dossiers de gestion de version ou de
+	dépendances sont sautés : ils ne contiennent pas d'archives à juger, seulement du bruit
+	et du temps perdu.
+	"""
+
+	found: list[Path] = []
+	for current, dirnames, filenames in os.walk(directory, followlinks=False):
+		dirnames[:] = sorted(name for name in dirnames if name not in _SKIPPED_DIRECTORIES)
+		for name in sorted(filenames):
+			candidate = Path(current) / name
+			if candidate.is_symlink() or not candidate.is_file():
+				continue
+			try:
+				if detect_kind(candidate) is not None:
+					found.append(candidate)
+			except OSError:
+				continue
+	return found
+
+
+def _display_path(path: Path) -> str:
+	"""
+	Description: Chemin affiché et rapporté, relatif au dossier courant quand c'est possible.
+	Usage: _display_path(Path("/depot/lib/a.zip")).
+	Inputs: path (Path) chemin.
+	Outputs: str en séparateurs /, comme l'attend SARIF.
+	"""
+
+	try:
+		return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+	except ValueError:
+		return path.as_posix()
+
+
+STDIN_NAME = "<entrée standard>"
+
+
+def _read_stdin(cap: int) -> object:
+	"""
+	Description: Lit une archive sur l'entrée standard, en mémoire, sous un plafond.
+	Usage: target = _read_stdin(limits.max_download_bytes).
+	Inputs: cap (int) plafond d'octets lus.
+	Outputs: MemorySource prête à inspecter, ou Verdict de refus si le plafond est franchi.
+
+	L'entrée standard ne se relit pas et ne se déplace pas : on la recueille d'un trait,
+	sans jamais l'écrire sur le disque, et on s'arrête net au plafond plutôt que de laisser
+	un flux sans fin remplir la mémoire.
+	"""
+
+	stream = sys.stdin.buffer
+	buffer = bytearray()
+	while True:
+		chunk = stream.read(65536)
+		if not chunk:
+			break
+		buffer += chunk
+		if len(buffer) > cap:
+			return Verdict.refused(
+				{"name": STDIN_NAME, "depth": 0, "downloaded_bytes": len(buffer)},
+				"download_cap",
+				f"Entrée standard coupée après {human_bytes(len(buffer))} : elle dépasse le "
+				f"plafond de {human_bytes(cap)}.",
+			)
+	return MemorySource(bytes(buffer), STDIN_NAME)
+
+
+def _collect_targets(
+	raw_targets: list[str],
+	limits: Limits,
+	timeout: float,
+	deadline: float = 300.0,
+) -> list[tuple[str, object]] | None:
+	"""
+	Description: Transforme les arguments de scan en couples (nom affiché, cible inspectable).
+	Usage: targets = _collect_targets(args.targets, limits, 30.0).
+	Inputs: raw_targets (list[str]) arguments tels que tapés, limits (Limits) pour le plafond de téléchargement, timeout (float) délai réseau.
+	Outputs: list des couples, ou None si un argument n'existe pas ou ne répond pas.
+	"""
+
+	targets: list[tuple[str, object]] = []
+	if raw_targets.count("-") > 1:
+		print("zipguard: l'entrée standard ne peut être lue qu'une fois.", file=sys.stderr)
+		return None
+	for raw in raw_targets:
+		if raw == "-":
+			targets.append(("-", _read_stdin(limits.max_download_bytes)))
+			continue
+		if is_url(raw):
+			try:
+				source = RemoteSource(
+					raw,
+					max_download_bytes=limits.max_download_bytes,
+					timeout=timeout,
+					deadline=deadline,
+				)
+			except (OSError, ValueError) as error:
+				print(
+					f"zipguard: archive distante injoignable : {redact_url(raw)} ({printable(error)})",
+					file=sys.stderr,
+				)
+				return None
+			# L'adresse affichée et écrite dans les rapports ne garde jamais d'identifiants.
+			targets.append((source.display_url, source))
+			continue
+		path = Path(raw)
+		if path.is_dir():
+			targets.extend((_display_path(found), found) for found in _walk_archives(path))
+		elif path.exists():
+			targets.append((raw if not path.is_absolute() else path.as_posix(), path))
+		else:
+			print(f"zipguard: archive introuvable : {raw}", file=sys.stderr)
+			return None
+	return targets
 
 
 def _command_scan(args: argparse.Namespace) -> int:
@@ -180,21 +421,44 @@ def _command_scan(args: argparse.Namespace) -> int:
 	Usage: interne à main.
 	Inputs: args (Namespace) options analysées.
 	Outputs: int code de sortie.
+
+	Avec une seule archive, les sorties texte et JSON sont inchangées. Avec plusieurs, le
+	texte enchaîne les rapports et le JSON devient une liste des mêmes objets. Le code de
+	sortie vaut 1 dès qu'une seule archive est dangereuse.
 	"""
 
-	if not args.archive.exists():
-		print(f"zipguard: archive introuvable : {args.archive}", file=sys.stderr)
-		return EXIT_ERROR
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
 
 	limits = _limits_from(args)
-	verdict = Scanner(limits).inspect(args.archive)
+	targets = _collect_targets(args.targets, limits, args.remote_timeout, args.remote_deadline)
+	if targets is None:
+		return EXIT_ERROR
 
-	if args.json:
-		print(render_json(str(args.archive), verdict, limits=limits, indent=2))
+	scanner = Scanner(limits, trusted=trusted)
+	results: list[tuple[str, Verdict]] = [
+		(name, target if isinstance(target, Verdict) else scanner.inspect(target))
+		for name, target in targets
+	]
+
+	if args.sarif:
+		print(render_sarif(results))
+	elif args.json:
+		documents = [json.loads(render_json(name, verdict, limits=limits)) for name, verdict in results]
+		first = args.targets[0]
+		single = len(args.targets) == 1 and (first == "-" or is_url(first) or not Path(first).is_dir())
+		payload = documents[0] if single else documents
+		print(json.dumps(payload, ensure_ascii=False, indent=2))
 	else:
-		print(render(str(args.archive), verdict, limits=limits, **_render_options(args)))
+		if not results:
+			print("\n  Aucune archive trouvée.\n")
+		for name, verdict in results:
+			print(render(name, verdict, limits=limits, **_render_options(args)))
 
-	return EXIT_OK if verdict.safe else EXIT_UNSAFE
+	if args.exit_zero:
+		return EXIT_OK
+	return EXIT_OK if all(verdict.safe for _, verdict in results) else EXIT_UNSAFE
 
 
 def _command_extract(args: argparse.Namespace) -> int:
@@ -209,8 +473,12 @@ def _command_extract(args: argparse.Namespace) -> int:
 		print(f"zipguard: archive introuvable : {args.archive}", file=sys.stderr)
 		return EXIT_ERROR
 
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
+
 	limits = _limits_from(args)
-	scanner = Scanner(limits)
+	scanner = Scanner(limits, trusted=trusted)
 
 	try:
 		written = scanner.safe_extract(args.archive, args.destination, allow_links=args.allow_links)
@@ -221,10 +489,10 @@ def _command_extract(args: argparse.Namespace) -> int:
 			print(
 				render(str(args.archive), scanner.inspect(args.archive), limits=limits, **_render_options(args))
 			)
-			print(f"  Extraction refusée : {error}\n")
+			print(f"  Extraction refusée : {printable(error)}\n")
 		return EXIT_UNSAFE
 	except OSError as error:
-		print(f"zipguard: extraction impossible : {error}", file=sys.stderr)
+		print(f"zipguard: extraction impossible : {printable(error)}", file=sys.stderr)
 		return EXIT_ERROR
 
 	if args.json:
@@ -292,8 +560,15 @@ def _command_serve(args: argparse.Namespace) -> int:
 
 	from .service import serve
 
+	trusted = _trusted_from(args)
+	if trusted is None:
+		return EXIT_USAGE
+
 	serve(
 		limits=_limits_from(args),
+		trusted=trusted,
+		sandbox=args.sandbox,
+		cgroup_root=args.cgroup_root,
 		host=args.host,
 		port=args.port,
 		max_upload_bytes=args.max_upload_mb * 1_000_000,
@@ -350,6 +625,27 @@ def _command_formats(_: argparse.Namespace) -> int:
 	return EXIT_OK
 
 
+def _command_fingerprint(args: argparse.Namespace) -> int:
+	"""
+	Description: Exécute la sous commande fingerprint.
+	Usage: interne à main.
+	Inputs: args (Namespace) options analysées.
+	Outputs: int code de sortie.
+
+	La sortie reprend exactement le format de sha256sum : on peut la rediriger telle quelle
+	dans une liste de confiance, et la relire avec sha256sum --check.
+	"""
+
+	status = EXIT_OK
+	for archive in args.archives:
+		try:
+			print(f"{fingerprint(archive)}  {archive}")
+		except OSError as error:
+			print(f"zipguard: lecture impossible : {archive} ({error.strerror or error})", file=sys.stderr)
+			status = EXIT_ERROR
+	return status
+
+
 _COMMANDS = {
 	"scan": _command_scan,
 	"extract": _command_extract,
@@ -357,6 +653,7 @@ _COMMANDS = {
 	"serve": _command_serve,
 	"bench": _command_bench,
 	"formats": _command_formats,
+	"fingerprint": _command_fingerprint,
 }
 
 

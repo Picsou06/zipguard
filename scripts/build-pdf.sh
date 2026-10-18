@@ -71,7 +71,7 @@ cat >> "$TMP/full.html" <<HTML
 	<h1>Sommaire</h1>
 	<ol>
 		<li><span class="t">Comment ça marche</span><span class="d">— le mécanisme des zip bombs</span></li>
-		<li><span class="t">Prévention</span><span class="d">— huit garde fous et la mesure</span></li>
+		<li><span class="t">Prévention</span><span class="d">— onze garde fous et la mesure</span></li>
 		<li><span class="t">Anatomie du dépôt</span><span class="d">— un adaptateur par format, un seul jeu de seuils</span></li>
 	</ol>
 </div>

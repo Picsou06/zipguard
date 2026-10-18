@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Description: Génère assets/scan-reel.svg, une carte terminal montrant la vraie sortie de ZipGuard.
+Description: Génère les cartes terminal du README, chacune montrant la vraie sortie de ZipGuard.
 Usage: python scripts/build-terminal.py
-Inputs: aucun, le script fabrique son archive de démonstration puis appelle la ligne de commande.
-Outputs: assets/scan-reel.svg réécrit sur place.
+Inputs: aucun, le script fabrique ses archives de démonstration puis appelle la ligne de commande.
+Outputs: assets/scan-reel.svg et assets/scan-chiffree.svg réécrits sur place.
 
 Un README qui recopie à la main la sortie d'un outil finit toujours par mentir : le format
 change, la capture reste. Ici la carte est produite en exécutant réellement la commande,
 donc elle est fausse au plus jusqu'au prochain lancement du script.
 
-L'archive montrée est une bombe imbriquée bornée à quatre mégaoctets décompressés, le même
-genre de cas que le banc d'essai : de quoi illustrer la détection sans fournir d'arme.
+La première carte montre une bombe imbriquée bornée à quatre mégaoctets décompressés, le
+même genre de cas que le banc d'essai : de quoi illustrer la détection sans fournir
+d'arme. La seconde montre le refus d'une archive chiffrée, dont rien n'est lisible.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGET = ROOT / "assets" / "scan-reel.svg"
+ASSETS = ROOT / "assets"
 APP = ROOT / "zipguard.app"
 
 CHAR_WIDTH = 7.82
@@ -69,15 +70,36 @@ def build_sample(directory: Path) -> Path:
 	return outer
 
 
-def capture(archive: Path) -> tuple[str, list[str]]:
+def build_encrypted_sample(directory: Path) -> Path:
+	"""
+	Description: Fabrique une archive dont les entrées portent le drapeau de chiffrement.
+	Usage: build_encrypted_sample(Path(tempdir)).
+	Inputs: directory (Path) dossier de travail.
+	Outputs: Path de l'archive.
+
+	Rien n'est réellement chiffré : zipfile ne le sait pas, et ZipGuard ne juge que le
+	drapeau. On réutilise l'outil du banc d'essai qui le pose.
+	"""
+
+	sys.path.insert(0, str(APP / "src"))
+	from zipguard.bench import _flag_encrypted
+
+	archive = directory / "sauvegarde.zip"
+	with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+		handle.writestr("comptes.csv", b"date,montant\n" * 200)
+		handle.writestr("notes.txt", b"Rien de special ici.\n")
+	return _flag_encrypted(archive)
+
+
+def capture(archive: Path, options: list[str]) -> tuple[str, list[str]]:
 	"""
 	Description: Lance la vraie ligne de commande et récupère sa sortie telle quelle.
-	Usage: command, lines = capture(archive).
-	Inputs: archive (Path) archive à inspecter.
+	Usage: command, lines = capture(archive, ["--max-ratio", "20"]).
+	Inputs: archive (Path) archive à inspecter, options (list[str]) options de scan.
 	Outputs: tuple de la commande affichée et des lignes de sortie.
 	"""
 
-	arguments = ["scan", archive.name, "--max-ratio", "20", "--no-color"]
+	arguments = ["scan", archive.name, *options, "--no-color"]
 	environment = {
 		**os.environ,
 		"PYTHONPATH": str(APP / "src"),
@@ -137,11 +159,11 @@ def escape(text: str) -> str:
 	return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def build(command: str, lines: list[str]) -> str:
+def build(command: str, lines: list[str], label: str) -> str:
 	"""
 	Description: Assemble la carte terminal autour de la sortie capturée.
-	Usage: build(command, lines).
-	Inputs: command (str) commande affichée, lines (list[str]) sortie.
+	Usage: build(command, lines, "Sortie réelle de zipguard scan").
+	Inputs: command (str) commande affichée, lines (list[str]) sortie, label (str) description accessible.
 	Outputs: str contenu du fichier SVG.
 	"""
 
@@ -176,7 +198,7 @@ def build(command: str, lines: list[str]) -> str:
 
 	return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}"
 	width="{width}" height="{height}" role="img"
-	aria-label="Sortie réelle de zipguard scan sur une archive à bombe imbriquée">
+	aria-label="{escape(label)}">
 	<rect x="0" y="0" width="{width}" height="{height}" rx="14" fill="{COLOURS['background']}"/>
 	<rect x="0" y="0" width="{width}" height="{HEADER}" rx="14" fill="{COLOURS['chrome']}"/>
 	<rect x="0" y="{HEADER - 14}" width="{width}" height="14" fill="{COLOURS['chrome']}"/>
@@ -201,16 +223,31 @@ def main() -> int:
 	Outputs: int code de sortie.
 	"""
 
-	workdir = Path(tempfile.mkdtemp(prefix="zipguard-capture-"))
-	try:
-		archive = build_sample(workdir)
-		command, lines = capture(archive)
-		TARGET.parent.mkdir(parents=True, exist_ok=True)
-		TARGET.write_text(build(command, lines), encoding="utf-8")
-	finally:
-		shutil.rmtree(workdir, ignore_errors=True)
+	cards = [
+		(
+			"scan-reel.svg",
+			build_sample,
+			["--max-ratio", "20"],
+			"Sortie réelle de zipguard scan sur une archive à bombe imbriquée",
+		),
+		(
+			"scan-chiffree.svg",
+			build_encrypted_sample,
+			[],
+			"Sortie réelle de zipguard scan sur une archive chiffrée",
+		),
+	]
 
-	print(f"{TARGET.relative_to(ROOT)} écrit ({TARGET.stat().st_size / 1024:.1f} Kio)")
+	ASSETS.mkdir(parents=True, exist_ok=True)
+	for filename, sample, options, label in cards:
+		workdir = Path(tempfile.mkdtemp(prefix="zipguard-capture-"))
+		try:
+			command, lines = capture(sample(workdir), options)
+			target = ASSETS / filename
+			target.write_text(build(command, lines, label), encoding="utf-8")
+		finally:
+			shutil.rmtree(workdir, ignore_errors=True)
+		print(f"{target.relative_to(ROOT)} écrit ({target.stat().st_size / 1024:.1f} Kio)")
 	return 0
 
 

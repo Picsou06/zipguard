@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import unicodedata
 
 from .limits import Limits, Verdict, human_bytes
 
@@ -84,6 +85,31 @@ def colour_enabled(explicit: bool | None = None, stream=None) -> bool:
 	return bool(getattr(stream, "isatty", lambda: False)())
 
 
+def printable(text: object) -> str:
+	"""
+	Description: Rend inoffensif un texte venu d'une archive avant de l'écrire dans un terminal.
+	Usage: print(printable(entry.name)).
+	Inputs: text (object) texte à afficher, converti par str.
+	Outputs: str où chaque caractère de contrôle ou de mise en forme est écrit en échappement visible.
+
+	Un nom d'entrée est choisi par l'auteur de l'archive. Glissé tel quel dans un terminal,
+	il peut y écrire des séquences ANSI : effacer la ligne du verdict et en dessiner une
+	fausse, cacher la suite, changer le titre de la fenêtre, voire écrire dans le
+	presse papiers. Les caractères d'inversion de sens (bidi) et les caractères invisibles
+	permettent la même tromperie sans un seul code ANSI. Tout ce qui n'est pas un caractère
+	visible est donc montré comme ce qu'il est : \\x1b, \\u202e.
+	"""
+
+	result = []
+	for char in str(text):
+		if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp"):
+			code = ord(char)
+			result.append(f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}")
+		else:
+			result.append(char)
+	return "".join(result)
+
+
 def _paint(text: str, *styles: str, enabled: bool = True) -> str:
 	"""
 	Description: Applique des styles ANSI à un fragment de texte.
@@ -158,12 +184,12 @@ def _render_children(verdict: Verdict, enabled: bool, glyphs: dict, depth: int =
 		pad = "     " + "  " * depth
 		mark = glyphs["safe"] if child.safe else glyphs["danger"]
 		colour = "green" if child.safe else "red"
-		name = _paint(child.stats.get("name", "?"), colour, enabled=enabled)
+		name = _paint(printable(child.stats.get("name", "?")), colour, enabled=enabled)
 		summary = _paint(_summarise(child, glyphs), "dim", enabled=enabled)
 		lines.append(f"{pad}{mark} {name}  {summary}")
 		for reason in child.reasons:
 			branch = _paint(glyphs["branch"], "dim", enabled=enabled)
-			lines.append(f"{pad}   {branch} {reason}")
+			lines.append(f"{pad}   {branch} {printable(reason)}")
 		lines.extend(_render_children(child, enabled, glyphs, depth + 1))
 	return lines
 
@@ -201,7 +227,7 @@ def render(
 		f"  {title} {subtitle}",
 		f"  {rule}",
 		"",
-		f"   {mark}  {_paint(status, 'bold', colour, enabled=enabled)}   {path}",
+		f"   {mark}  {_paint(status, 'bold', colour, enabled=enabled)}   {printable(path)}",
 	]
 
 	if stats.get("kind"):
@@ -230,6 +256,24 @@ def render(
 		]
 		if stats.get("links"):
 			lines.append(_field("liens symboliques", str(stats["links"]), enabled))
+		if stats.get("encrypted_entries"):
+			lines.append(_field("entrées chiffrées", str(stats["encrypted_entries"]), enabled))
+
+	if stats.get("trusted"):
+		lines += [
+			"",
+			_field("confiance", "empreinte présente dans la liste, contenu non inspecté", enabled),
+		]
+	if stats.get("sha256"):
+		lines.append(_field("sha256", stats["sha256"], enabled))
+	if "downloaded_bytes" in stats:
+		lines.append(
+			_field(
+				"téléchargé",
+				f"{human_bytes(stats['downloaded_bytes'])} sur {human_bytes(stats.get('source_size', 0))}",
+				enabled,
+			)
+		)
 
 	if verdict.children:
 		lines += ["", f"   {_paint('archives imbriquées', 'bold', enabled=enabled)}"]
@@ -238,7 +282,7 @@ def render(
 	if verdict.reasons:
 		lines += ["", f"   {_paint('raisons du refus', 'bold', 'red', enabled=enabled)}"]
 		for reason in verdict.reasons:
-			lines.append(f"     {glyphs['bullet']} {reason}")
+			lines.append(f"     {glyphs['bullet']} {printable(reason)}")
 
 	lines += ["", f"  {rule}", ""]
 	return "\n".join(lines)

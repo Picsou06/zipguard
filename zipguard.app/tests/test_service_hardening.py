@@ -124,7 +124,7 @@ def test_memory_exhaustion_in_the_worker_is_a_dangerous_verdict(
 	monkeypatch.setattr(Scanner, "inspect", explode)
 	parent, child = multiprocessing.Pipe(duplex=False)
 	_worker(str(archive), Limits().as_dict(), child, 0)
-	status, payload = parent.recv()
+	status, payload, _ = parent.recv()
 	assert status == "ok"
 	assert payload["safe"] is False
 	assert "Mémoire" in payload["reasons"][0]

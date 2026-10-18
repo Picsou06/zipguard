@@ -32,6 +32,11 @@ _DENIED = {
 		"execveat": 322,
 		"fork": 57,
 		"vfork": 58,
+		"tkill": 200,
+		"pidfd_open": 434,
+		"pidfd_send_signal": 424,
+		"pidfd_getfd": 438,
+		"process_madvise": 440,
 		"ptrace": 101,
 		"process_vm_readv": 310,
 		"process_vm_writev": 311,
@@ -68,6 +73,11 @@ _DENIED = {
 		"accept4": 242,
 		"execve": 221,
 		"execveat": 281,
+		"tkill": 130,
+		"pidfd_open": 434,
+		"pidfd_send_signal": 424,
+		"pidfd_getfd": 438,
+		"process_madvise": 440,
 		"ptrace": 117,
 		"process_vm_readv": 270,
 		"process_vm_writev": 271,
@@ -96,6 +106,17 @@ _DENIED = {
 	},
 }
 
+# Appels filtrés selon leurs arguments plutôt que refusés en bloc. clone crée aussi bien
+# un thread qu'un processus : seul le drapeau CLONE_THREAD distingue les deux. clone3 passe
+# ses drapeaux dans une structure que seccomp ne peut pas lire ; on le dit absent (ENOSYS),
+# et la glibc se rabat alors d'elle même sur clone. kill et tgkill ne sont permis que vers
+# le worker lui même : sans cela, un worker compromis pourrait abattre le serveur, qui
+# tourne sous le même utilisateur.
+_CLONE = {"x86_64": 56, "aarch64": 220}
+_CLONE3 = 435
+_SELF_ONLY = {"x86_64": (62, 234), "aarch64": (129, 131)}
+_CLONE_THREAD = 0x00010000
+
 _AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
 _X32_SYSCALL_BIT = 0x40000000
 
@@ -105,11 +126,26 @@ _SECCOMP_MODE_FILTER = 2
 _SECCOMP_RET_ALLOW = 0x7FFF0000
 _SECCOMP_RET_ERRNO = 0x00050000
 _EPERM = 1
+_ENOSYS = 38
 
 _BPF_LD_W_ABS = 0x20
 _BPF_JEQ_K = 0x15
 _BPF_JGE_K = 0x35
+_BPF_JSET_K = 0x45
 _BPF_RET_K = 0x06
+
+# Champs de struct seccomp_data : numéro d'appel, architecture, puis les arguments, dont on
+# lit les 32 bits de poids faible (petit boutiste sur les deux architectures visées).
+_DATA_NR = 0
+_DATA_ARCH = 4
+_DATA_ARG0 = 16
+
+_LANDLOCK_CREATE_RULESET = 444
+_LANDLOCK_ADD_RULE = 445
+_LANDLOCK_RESTRICT_SELF = 446
+_LANDLOCK_CREATE_RULESET_VERSION = 1
+_LANDLOCK_RULE_PATH_BENEATH = 1
+_LANDLOCK_READ = (1 << 2) | (1 << 3)  # READ_FILE | READ_DIR
 
 
 class SandboxError(RuntimeError):
@@ -126,7 +162,7 @@ class SandboxConfig:
 	"""
 	Description: Réglages du bac à sable posé autour de chaque worker d'analyse.
 	Usage: SandboxConfig(mode="strict", cgroup_root="/sys/fs/cgroup/zipguard").
-	Inputs: mode (str) auto, strict ou off ; max_memory_bytes, cpu_seconds, max_file_bytes, max_open_files (int) plafonds, 0 pour aucun ; seccomp (bool) ; cgroup_root (str | None) cgroup v2 délégué ; pids_max (int).
+	Inputs: mode (str) auto, strict ou off ; max_memory_bytes, cpu_seconds, max_file_bytes, max_open_files (int) plafonds, 0 pour aucun ; seccomp (bool) ; landlock (bool) ; cgroup_root (str | None) cgroup v2 délégué ; pids_max (int).
 	Outputs: instance immuable, sérialisable pour traverser vers le worker.
 
 	auto pose tout ce que le système permet et rapporte le reste ; strict refuse d'analyser
@@ -139,6 +175,7 @@ class SandboxConfig:
 	max_file_bytes: int = 0
 	max_open_files: int = 128
 	seccomp: bool = True
+	landlock: bool = True
 	cgroup_root: str | None = None
 	pids_max: int = 32
 
@@ -216,39 +253,65 @@ class _SockFprog(ctypes.Structure):
 	_fields_ = (("len", ctypes.c_ushort), ("filter", ctypes.POINTER(_SockFilter)))
 
 
-def _filter_program(machine: str) -> list[tuple[int, int, int, int]]:
+def _filter_program(machine: str, pid: int) -> list[tuple[int, int, int, int]]:
 	"""
 	Description: Construit le programme BPF du filtre, instruction par instruction.
 	Usage: interne à install_seccomp.
-	Inputs: machine (str) x86_64 ou aarch64.
+	Inputs: machine (str) x86_64 ou aarch64, pid (int) identifiant du worker, seul destinataire permis de ses signaux.
 	Outputs: list de tuples (code, jt, jf, k).
 
 	Structure : vérifier l'architecture (un appel 32 bits passé par la porte de
-	compatibilité aurait d'autres numéros), charger le numéro d'appel, le comparer à chaque
-	appel refusé, autoriser sinon. Tous les refus sautent vers la même instruction finale.
+	compatibilité aurait d'autres numéros), charger le numéro d'appel, aiguiller les appels
+	filtrés sur leurs arguments, comparer aux appels refusés, autoriser sinon. BPF ne saute
+	que vers l'avant : les blocs d'arrivée sont donc placés après la liste, et les sauts
+	sont écrits avec des étiquettes résolues à la fin.
 	"""
 
-	denied = sorted(set(_DENIED[machine].values()))
-	program: list[list[int]] = [
-		[_BPF_LD_W_ABS, 0, 0, 4],
-		[_BPF_JEQ_K, 1, 0, _AUDIT_ARCH[machine]],
-		[_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO | _EPERM],
-		[_BPF_LD_W_ABS, 0, 0, 0],
-	]
-	jumps: list[int] = []
-	if machine == "x86_64":
-		jumps.append(len(program))
-		program.append([_BPF_JGE_K, 0, 0, _X32_SYSCALL_BIT])
-	for number in denied:
-		jumps.append(len(program))
-		program.append([_BPF_JEQ_K, 0, 0, number])
-	program.append([_BPF_RET_K, 0, 0, _SECCOMP_RET_ALLOW])
-	deny = len(program)
-	program.append([_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO | _EPERM])
+	program: list[list] = []
+	labels: dict[str, int] = {}
 
-	for index in jumps:
-		program[index][1] = deny - index - 1
-	return [tuple(instruction) for instruction in program]
+	def emit(code: int, k: int, jt: int | str = 0, jf: int | str = 0) -> None:
+		program.append([code, jt, jf, k])
+
+	def label(name: str) -> None:
+		labels[name] = len(program)
+
+	emit(_BPF_LD_W_ABS, _DATA_ARCH)
+	emit(_BPF_JEQ_K, _AUDIT_ARCH[machine], 0, "deny")
+	emit(_BPF_LD_W_ABS, _DATA_NR)
+	if machine == "x86_64":
+		emit(_BPF_JGE_K, _X32_SYSCALL_BIT, "deny", 0)
+	emit(_BPF_JEQ_K, _CLONE[machine], "clone", 0)
+	emit(_BPF_JEQ_K, _CLONE3, "enosys", 0)
+	for number in _SELF_ONLY[machine]:
+		emit(_BPF_JEQ_K, number, "self", 0)
+	for number in sorted(set(_DENIED[machine].values())):
+		emit(_BPF_JEQ_K, number, "deny", 0)
+	emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+
+	label("clone")
+	emit(_BPF_LD_W_ABS, _DATA_ARG0)
+	emit(_BPF_JSET_K, _CLONE_THREAD, "allow", "deny")
+	label("self")
+	emit(_BPF_LD_W_ABS, _DATA_ARG0)
+	emit(_BPF_JEQ_K, pid & 0xFFFFFFFF, "allow", "deny")
+	label("allow")
+	emit(_BPF_RET_K, _SECCOMP_RET_ALLOW)
+	label("enosys")
+	emit(_BPF_RET_K, _SECCOMP_RET_ERRNO | _ENOSYS)
+	label("deny")
+	emit(_BPF_RET_K, _SECCOMP_RET_ERRNO | _EPERM)
+
+	resolved = []
+	for index, (code, jt, jf, k) in enumerate(program):
+		offsets = []
+		for target in (jt, jf):
+			offset = labels[target] - index - 1 if isinstance(target, str) else target
+			if not 0 <= offset <= 255:  # pragma: no cover - garde fou de construction
+				raise ValueError(f"Saut BPF hors de portée à l'instruction {index}.")
+			offsets.append(offset)
+		resolved.append((code, offsets[0], offsets[1], k))
+	return resolved
 
 
 def install_seccomp() -> bool:
@@ -264,16 +327,112 @@ def install_seccomp() -> bool:
 
 	if not seccomp_supported():
 		return False
-	program = _filter_program(platform.machine())
+	program = _filter_program(platform.machine(), os.getpid())
 	filters = (_SockFilter * len(program))(*(_SockFilter(*instruction) for instruction in program))
 	fprog = _SockFprog(len(program), filters)
 
 	libc = ctypes.CDLL(None, use_errno=True)
-	ulong = ctypes.c_ulong
-	if libc.prctl(_PR_SET_NO_NEW_PRIVS, ulong(1), ulong(0), ulong(0), ulong(0)) != 0:
+	if not _no_new_privs(libc):
 		return False
+	ulong = ctypes.c_ulong
 	pointer = ctypes.cast(ctypes.pointer(fprog), ctypes.c_void_p)
 	return libc.prctl(_PR_SET_SECCOMP, ulong(_SECCOMP_MODE_FILTER), pointer, ulong(0), ulong(0)) == 0
+
+
+def _no_new_privs(libc) -> bool:
+	ulong = ctypes.c_ulong
+	return libc.prctl(_PR_SET_NO_NEW_PRIVS, ulong(1), ulong(0), ulong(0), ulong(0)) == 0
+
+
+class _RulesetAttr(ctypes.Structure):
+	_fields_ = (("handled_access_fs", ctypes.c_uint64),)
+
+
+class _PathBeneath(ctypes.Structure):
+	_pack_ = 1
+	_fields_ = (("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32))
+
+
+def landlock_abi() -> int:
+	"""
+	Description: Version de Landlock offerte par le noyau, 0 si absente.
+	Usage: landlock_abi().
+	Inputs: aucun.
+	Outputs: int version de l'interface Landlock.
+	"""
+
+	if not sys.platform.startswith("linux"):
+		return 0
+	libc = ctypes.CDLL(None, use_errno=True)
+	version = libc.syscall(
+		ctypes.c_long(_LANDLOCK_CREATE_RULESET),
+		None,
+		ctypes.c_size_t(0),
+		ctypes.c_uint32(_LANDLOCK_CREATE_RULESET_VERSION),
+	)
+	return max(0, version)
+
+
+def install_landlock(writable: Path) -> bool:
+	"""
+	Description: Restreint le système de fichiers du processus : lecture partout, écriture dans un seul dossier.
+	Usage: install_landlock(Path("/tmp/zipguard-worker-x")).
+	Inputs: writable (Path) seul dossier où le worker garde tous les droits.
+	Outputs: bool vrai si la restriction est active.
+
+	seccomp ne voit pas les chemins : il peut refuser open() en bloc, pas « open() hors de
+	/tmp ». Landlock, si. Sans lui, un worker compromis pourrait écrire n'importe où
+	l'utilisateur du service a le droit d'écrire, ~/.bashrc compris. Avec lui, il lit ce
+	qu'il veut mais n'écrit, ne crée, ne renomme et ne supprime que dans son dossier.
+	Disponible sans privilège depuis Linux 5.13 ; irréversible comme seccomp.
+	"""
+
+	abi = landlock_abi()
+	if abi < 1:
+		return False
+	handled = (1 << 13) - 1
+	if abi >= 2:
+		handled |= 1 << 13  # REFER
+	if abi >= 3:
+		handled |= 1 << 14  # TRUNCATE
+	if abi >= 5:
+		handled |= 1 << 15  # IOCTL_DEV
+
+	libc = ctypes.CDLL(None, use_errno=True)
+	attr = _RulesetAttr(handled)
+	ruleset = libc.syscall(
+		ctypes.c_long(_LANDLOCK_CREATE_RULESET),
+		ctypes.byref(attr),
+		ctypes.c_size_t(ctypes.sizeof(attr)),
+		ctypes.c_uint32(0),
+	)
+	if ruleset < 0:
+		return False
+	try:
+		rules = (("/", _LANDLOCK_READ), (str(writable), handled))
+		for path, access in rules:
+			fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+			try:
+				rule = _PathBeneath(access, fd)
+				added = libc.syscall(
+					ctypes.c_long(_LANDLOCK_ADD_RULE),
+					ctypes.c_int(ruleset),
+					ctypes.c_int(_LANDLOCK_RULE_PATH_BENEATH),
+					ctypes.byref(rule),
+					ctypes.c_uint32(0),
+				)
+			finally:
+				os.close(fd)
+			if added != 0:
+				return False
+		if not _no_new_privs(libc):
+			return False
+		return (
+			libc.syscall(ctypes.c_long(_LANDLOCK_RESTRICT_SELF), ctypes.c_int(ruleset), ctypes.c_uint32(0))
+			== 0
+		)
+	finally:
+		os.close(ruleset)
 
 
 class CgroupJail:
@@ -339,15 +498,21 @@ def join_cgroup(path: Path) -> None:
 	(Path(path) / "cgroup.procs").write_text(str(os.getpid()))
 
 
-def apply_sandbox(config: SandboxConfig, cgroup: str | None = None) -> dict:
+def apply_sandbox(
+	config: SandboxConfig,
+	cgroup: str | None = None,
+	workdir: str | None = None,
+) -> dict:
 	"""
 	Description: Pose le bac à sable sur le processus courant et rapporte ce qui est en place.
 	Usage: report = apply_sandbox(SandboxConfig(), cgroup="/sys/fs/cgroup/zipguard/zipguard-1-ab").
-	Inputs: config (SandboxConfig) réglages, cgroup (str | None) cgroup à rejoindre.
+	Inputs: config (SandboxConfig) réglages, cgroup (str | None) cgroup à rejoindre, workdir (str | None) seul dossier où le worker pourra écrire.
 	Outputs: dict décrivant chaque élément posé ou non.
 
 	L'ordre compte : entrer dans le cgroup d'abord, tant que l'écriture est permise ; puis
-	les limites de ressources ; seccomp en dernier, car il est irréversible. En mode strict,
+	les limites de ressources ; Landlock et seccomp en dernier, car ils sont irréversibles.
+	Les fichiers temporaires du worker sont redirigés vers workdir, le seul dossier que
+	Landlock lui laisse en écriture. En mode strict,
 	un élément manquant lève SandboxError avant que la moindre archive soit lue.
 	"""
 
@@ -385,6 +550,16 @@ def apply_sandbox(config: SandboxConfig, cgroup: str | None = None) -> dict:
 		# Sans cela, dépasser RLIMIT_FSIZE tue le worker par un signal ; ignoré, il devient
 		# une simple erreur d'écriture, que le scanner traduit en verdict.
 		signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+
+	if workdir:
+		import tempfile
+
+		tempfile.tempdir = workdir
+
+	if config.landlock:
+		report["landlock"] = bool(workdir) and install_landlock(Path(workdir))
+		if not report["landlock"]:
+			missing.append("landlock")
 
 	if config.seccomp:
 		report["seccomp"] = install_seccomp()

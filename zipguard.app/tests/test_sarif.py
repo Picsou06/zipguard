@@ -115,3 +115,14 @@ def test_symlinked_directories_are_not_followed(tmp_path: Path, monkeypatch, cap
 	(inside / "lien").symlink_to(outside, target_is_directory=True)
 	monkeypatch.chdir(inside)
 	assert main(["scan", ".", flag]) == EXIT_OK
+
+
+def test_sarif_messages_carry_no_control_characters(tmp_path: Path) -> None:
+	from zipguard import Verdict
+
+	verdict = Verdict(
+		False, ["Archive imbriquée dangereuse — \u202eexe.txt : ratio"], {}, codes=["nested"]
+	)
+	text = json.loads(render_sarif([("a.zip", verdict)]))["runs"][0]["results"][0]["message"]["text"]
+	assert "\u202e" not in text
+	assert "\\u202e" in text

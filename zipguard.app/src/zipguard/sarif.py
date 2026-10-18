@@ -4,6 +4,7 @@ import hashlib
 import json
 
 from .limits import REASON_CODES, Verdict
+from .report import printable
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
@@ -29,6 +30,7 @@ _SEVERITY = {
 	"nested_budget": "6.0",
 	"encrypted": "5.0",
 	"download_cap": "5.0",
+	"download_timeout": "5.0",
 	"memory": "7.0",
 	"unreadable": "3.0",
 	"unsupported": "1.0",
@@ -94,7 +96,7 @@ def _results(uri: str, verdict: Verdict) -> list[dict]:
 			{
 				"ruleId": rule_id(code),
 				"level": _LEVELS.get(code, "error"),
-				"message": {"text": message},
+				"message": {"text": printable(message)},
 				"locations": [
 					{
 						"physicalLocation": {

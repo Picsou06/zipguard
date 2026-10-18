@@ -313,14 +313,24 @@ class Archive:
 	"""
 	Description: Interface commune d'inspection, identique quel que soit le format d'archive.
 	Usage: with open_archive(path) as handle: handle.entries().
-	Inputs: source (Source) origine des octets, kind (str) format détecté, read_cap (int) plafond de lecture.
+	Inputs: source (Source) origine des octets, kind (str) format détecté, read_cap (int) plafond de lecture, memory_cap (int | None) plafond d'une entrée tenue en mémoire.
 	Outputs: objet exposant entries(), open() et compressed_total.
 	"""
 
-	def __init__(self, source: Source, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
 		self.source = source
 		self.kind = kind
 		self.read_cap = read_cap
+		self.memory_cap = read_cap if memory_cap is None else min(read_cap, memory_cap)
+		# Entrées qu'un plafond a empêché de renifler : le scanner ne peut pas savoir si ce
+		# sont des archives, donc il doit les compter comme invérifiables.
+		self.unsniffable: list[str] = []
 		self._entries: list[Entry] | None = None
 		self._measured = False
 
@@ -385,6 +395,9 @@ class Archive:
 			return b""
 		try:
 			stream = self.open(entry)
+		except ReadCapExceeded:
+			self.unsniffable.append(entry.name)
+			return b""
 		except SNIFF_ERRORS:
 			return b""
 		try:
@@ -431,8 +444,14 @@ class ZipArchive(Archive):
 	Outputs: entrées issues du répertoire central du ZIP.
 	"""
 
-	def __init__(self, source: Source, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(source, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		self._raw = source.open()
 		try:
 			self._zip = zipfile.ZipFile(self._raw)
@@ -537,8 +556,14 @@ class TarArchive(Archive):
 	ce qui transforme l'inventaire lui même en garde fou.
 	"""
 
-	def __init__(self, source: Source, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(source, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		self._measured = True
 		self._open_streams: list[IO[bytes]] = []
 		self._heads: dict[str, bytes] = {}
@@ -622,8 +647,14 @@ class StreamArchive(Archive):
 	au delà : la seule valeur digne de confiance est celle que l'on compte soi même.
 	"""
 
-	def __init__(self, source: Source, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(source, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		self._measured = True
 
 	def _raw_stream(self) -> IO[bytes]:
@@ -675,8 +706,14 @@ class SevenZipArchive(Archive):
 	lire par blocs.
 	"""
 
-	def __init__(self, source: Source, kind: str, read_cap: int = DEFAULT_READ_CAP) -> None:
-		super().__init__(source, kind, read_cap)
+	def __init__(
+		self,
+		source: Source,
+		kind: str,
+		read_cap: int = DEFAULT_READ_CAP,
+		memory_cap: int | None = None,
+	) -> None:
+		super().__init__(source, kind, read_cap, memory_cap)
 		try:
 			import py7zr
 		except ImportError as error:  # pragma: no cover - dépend de l'environnement
@@ -755,8 +792,11 @@ class SevenZipArchive(Archive):
 
 	def _open_in_memory(self, entry: Entry) -> IO[bytes]:
 		# Le tampon de py7zr ignore en silence ce qui dépasse sa limite : on lui donne un
-		# octet de marge, et un tampon plein jusqu'à elle signe une entrée trop grosse.
-		factory = self._py7zr.io.BytesIOFactory(self.read_cap + 1)
+		# octet de marge, et un tampon plein jusqu'à elle signe une entrée trop grosse. La
+		# limite est celle de la mémoire, plus serrée que le plafond de lecture.
+		if entry.size > self.memory_cap:
+			raise ReadCapExceeded(self.memory_cap, entry.size)
+		factory = self._py7zr.io.BytesIOFactory(self.memory_cap + 1)
 		self._extract(entry, factory=factory)
 		try:
 			product = factory.get(entry.name)
@@ -764,8 +804,8 @@ class SevenZipArchive(Archive):
 			raise KeyError(f"Entrée introuvable dans l'archive : {entry.name}") from error
 
 		actual = product.size()
-		if actual > self.read_cap:
-			raise ReadCapExceeded(self.read_cap, actual)
+		if actual > self.memory_cap:
+			raise ReadCapExceeded(self.memory_cap, actual)
 		product.seek(0)
 		return io.BytesIO(product.read())
 
@@ -779,11 +819,15 @@ class SevenZipArchive(Archive):
 			self._workdirs.clear()
 
 
-def open_archive(target: Source | Path, read_cap: int = DEFAULT_READ_CAP) -> Archive:
+def open_archive(
+	target: Source | Path,
+	read_cap: int = DEFAULT_READ_CAP,
+	memory_cap: int | None = None,
+) -> Archive:
 	"""
 	Description: Ouvre n'importe quelle archive prise en charge derrière une interface unique.
 	Usage: with open_archive(Path("a.tar.gz"), read_cap=1_000_000) as handle: handle.entries().
-	Inputs: target (Source | Path) archive, read_cap (int) plafond d'octets décompressés lus.
+	Inputs: target (Source | Path) archive, read_cap (int) plafond d'octets décompressés lus, memory_cap (int | None) plafond d'une entrée décompressée en mémoire.
 	Outputs: Archive adaptée au format détecté.
 
 	Lève UnsupportedArchive quand la signature n'est reconnue par aucun adaptateur, et
@@ -802,13 +846,13 @@ def open_archive(target: Source | Path, read_cap: int = DEFAULT_READ_CAP) -> Arc
 		)
 
 	if kind == "zip":
-		return ZipArchive(source, kind, read_cap)
+		return ZipArchive(source, kind, read_cap, memory_cap)
 	if kind in TAR_KINDS:
-		return TarArchive(source, kind, read_cap)
+		return TarArchive(source, kind, read_cap, memory_cap)
 	if kind in STREAM_KINDS:
-		return StreamArchive(source, kind, read_cap)
+		return StreamArchive(source, kind, read_cap, memory_cap)
 	if kind == "7z":
-		return SevenZipArchive(source, kind, read_cap)
+		return SevenZipArchive(source, kind, read_cap, memory_cap)
 
 	raise UnsupportedArchive(f"Format non pris en charge : {kind}")  # pragma: no cover
 

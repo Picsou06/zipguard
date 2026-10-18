@@ -13,8 +13,8 @@ from .bench import bench_json, build_corpus, render_bench, run_bench
 from .demo import FORMATS, build_demo_archive
 from .formats import detect_kind, supported_kinds
 from .limits import Limits, Verdict, human_bytes
-from .remote import RemoteSource, is_url
-from .report import render, render_json
+from .remote import RemoteSource, is_url, redact_url
+from .report import printable, render, render_json
 from .sarif import render_sarif
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
 from .trust import fingerprint, load_allowlist
@@ -198,6 +198,12 @@ def _build_parser() -> argparse.ArgumentParser:
 		help="Délai de chaque requête vers une archive distante, en secondes.",
 	)
 	scan.add_argument(
+		"--remote-deadline",
+		type=float,
+		default=300.0,
+		help="Délai total de l'inspection d'une archive distante, en secondes.",
+	)
+	scan.add_argument(
 		"--exit-zero",
 		action="store_true",
 		help="Rend 0 même si une archive est dangereuse (utile pour publier un rapport en CI).",
@@ -330,6 +336,7 @@ def _collect_targets(
 	raw_targets: list[str],
 	limits: Limits,
 	timeout: float,
+	deadline: float = 300.0,
 ) -> list[tuple[str, object]] | None:
 	"""
 	Description: Transforme les arguments de scan en couples (nom affiché, cible inspectable).
@@ -342,11 +349,20 @@ def _collect_targets(
 	for raw in raw_targets:
 		if is_url(raw):
 			try:
-				source = RemoteSource(raw, max_download_bytes=limits.max_download_bytes, timeout=timeout)
+				source = RemoteSource(
+					raw,
+					max_download_bytes=limits.max_download_bytes,
+					timeout=timeout,
+					deadline=deadline,
+				)
 			except (OSError, ValueError) as error:
-				print(f"zipguard: archive distante injoignable : {raw} ({error})", file=sys.stderr)
+				print(
+					f"zipguard: archive distante injoignable : {redact_url(raw)} ({printable(error)})",
+					file=sys.stderr,
+				)
 				return None
-			targets.append((raw, source))
+			# L'adresse affichée et écrite dans les rapports ne garde jamais d'identifiants.
+			targets.append((source.display_url, source))
 			continue
 		path = Path(raw)
 		if path.is_dir():
@@ -376,7 +392,7 @@ def _command_scan(args: argparse.Namespace) -> int:
 		return EXIT_USAGE
 
 	limits = _limits_from(args)
-	targets = _collect_targets(args.targets, limits, args.remote_timeout)
+	targets = _collect_targets(args.targets, limits, args.remote_timeout, args.remote_deadline)
 	if targets is None:
 		return EXIT_ERROR
 
@@ -431,10 +447,10 @@ def _command_extract(args: argparse.Namespace) -> int:
 			print(
 				render(str(args.archive), scanner.inspect(args.archive), limits=limits, **_render_options(args))
 			)
-			print(f"  Extraction refusée : {error}\n")
+			print(f"  Extraction refusée : {printable(error)}\n")
 		return EXIT_UNSAFE
 	except OSError as error:
-		print(f"zipguard: extraction impossible : {error}", file=sys.stderr)
+		print(f"zipguard: extraction impossible : {printable(error)}", file=sys.stderr)
 		return EXIT_ERROR
 
 	if args.json:

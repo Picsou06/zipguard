@@ -144,7 +144,11 @@ class Scanner:
 				return self._trusted_verdict(source, base)
 
 		try:
-			handle = open_archive(source, read_cap=self.limits.max_total_bytes)
+			handle = open_archive(
+				source,
+				read_cap=self.limits.max_total_bytes,
+				memory_cap=None if source.on_disk else self.limits.max_buffer_bytes,
+			)
 		except UnsupportedArchive as error:
 			return Verdict.refused(base, "unsupported", str(error))
 		except EncryptedArchive as error:
@@ -178,6 +182,15 @@ class Scanner:
 			candidates = self._nested_candidates(handle, entries)
 			stats = self._build_stats(handle, entries, base, len(candidates))
 			findings = self._threshold_reasons(stats)
+			if handle.unsniffable:
+				findings.append(
+					(
+						"nested_cut",
+						f"{len(handle.unsniffable)} entrée(s) trop grosse(s) pour être lue(s) sous le "
+						f"plafond de {human_bytes(handle.memory_cap)} : impossible de savoir si elles "
+						"cachent une archive, contenu invérifiable.",
+					)
+				)
 			children = self._descend(handle, candidates, depth, budget, findings)
 
 		return Verdict(
@@ -224,19 +237,27 @@ class Scanner:
 			return verdict
 
 		stats = {**verdict.stats, "downloaded_bytes": downloaded, "source_size": source.size()}
-		if not getattr(source, "cap_exceeded", False):
+		if getattr(source, "cap_exceeded", False):
+			code = "download_cap"
+			message = (
+				f"Plafond de téléchargement atteint après {human_bytes(downloaded)} : l'archive "
+				f"n'a pas pu être lue en entier sous {human_bytes(self.limits.max_download_bytes)}."
+			)
+		elif getattr(source, "deadline_exceeded", False):
+			code = "download_timeout"
+			message = (
+				f"Délai total de {source.deadline:g} s dépassé après {human_bytes(downloaded)} "
+				"lus : le serveur est trop lent pour que l'archive soit jugée."
+			)
+		else:
 			return replace(verdict, stats=stats)
 
-		message = (
-			f"Plafond de téléchargement atteint après {human_bytes(downloaded)} : "
-			f"l'archive n'a pas pu être lue en entier sous {human_bytes(self.limits.max_download_bytes)}."
-		)
 		return Verdict(
 			False,
 			[message, *verdict.reasons],
 			stats,
 			verdict.children,
-			["download_cap", *verdict.codes],
+			[code, *verdict.codes],
 		)
 
 	def _build_stats(

@@ -32,6 +32,10 @@ class _Files:
 		self.ranges = True
 		self.announce_length = True
 		self.encoding: str | None = None
+		self.etags: dict[str, str] = {}
+		self.authorizations: list[str | None] = []
+		self.redirect_to: str | None = None
+		self.redirects: dict[str, str] = {}
 		self.requests = 0
 		self.httpd: ThreadingHTTPServer | None = None
 
@@ -51,11 +55,26 @@ def files():
 
 		def do_GET(self) -> None:
 			state.requests += 1
-			blob = state.blobs.get(self.path.lstrip("/"))
+			state.authorizations.append(self.headers.get("Authorization"))
+			if state.redirect_to:
+				self.send_response(302)
+				self.send_header("Location", state.redirect_to)
+				self.end_headers()
+				return
+			name = self.path.lstrip("/")
+			if name in state.redirects:
+				self.send_response(302)
+				self.send_header("Location", state.redirects[name])
+				self.end_headers()
+				return
+			blob = state.blobs.get(name)
 			if blob is None:
 				self.send_error(404)
 				return
 			header = self.headers.get("Range")
+			validator = self.headers.get("If-Range")
+			if validator is not None and validator != state.etags.get(name):
+				header = None
 			start = 0
 			if header and state.ranges:
 				start = int(header.removeprefix("bytes=").split("-")[0])
@@ -68,6 +87,8 @@ def files():
 				self.send_header("Content-Length", str(len(body)))
 			if state.encoding:
 				self.send_header("Content-Encoding", state.encoding)
+			if name in state.etags:
+				self.send_header("ETag", state.etags[name])
 			self.end_headers()
 			with contextlib.suppress(BrokenPipeError, ConnectionResetError):
 				self.wfile.write(body)
@@ -259,3 +280,69 @@ def test_a_remote_seven_zip_is_inspected_in_memory(files, tmp_path: Path, no_dis
 	verdict = Scanner().inspect(RemoteSource(files.add("externe.7z", archive.read_bytes())))
 	assert verdict.safe is False
 	assert verdict.codes == ["nested"]
+
+
+def test_a_redirect_to_ftp_is_refused(files) -> None:
+	files.redirect_to = "ftp://exemple.org/a.zip"
+	with pytest.raises(RemoteError, match="Redirection refusée"):
+		RemoteSource(files.add("a.zip", b"PK"))
+
+
+def test_a_file_changed_during_inspection_is_not_judged(files, tmp_path: Path) -> None:
+	first = write_zip(tmp_path / "v1.zip", {"a.txt": b"bonjour", "b.bin": os.urandom(300_000)})
+	files.etags["a.zip"] = '"v1"'
+	source = RemoteSource(files.add("a.zip", first.read_bytes()))
+	second = write_zip(tmp_path / "v2.zip", {"a.txt": b"A" * 2_000_000})
+	files.blobs["a.zip"] = second.read_bytes()
+	files.etags["a.zip"] = '"v2"'
+	verdict = Scanner().inspect(source)
+	assert verdict.safe is False
+	assert "changé" in " ".join(verdict.reasons)
+
+
+def test_an_unchanged_file_keeps_its_validator(files, tmp_path: Path) -> None:
+	archive = write_zip(tmp_path / "ok.zip", {"a.txt": b"bonjour"})
+	files.etags["ok.zip"] = '"stable"'
+	assert Scanner().inspect(RemoteSource(files.add("ok.zip", archive.read_bytes()))).safe is True
+
+
+def test_the_total_deadline_is_the_reason_given(files, tmp_path: Path) -> None:
+	archive = write_zip(tmp_path / "ok.zip", {"a.txt": b"bonjour"})
+	source = RemoteSource(files.add("ok.zip", archive.read_bytes()), deadline=5.0)
+	source._started -= 10  # le délai total est écoulé juste après la première requête
+	verdict = Scanner().inspect(source)
+	assert verdict.safe is False
+	assert verdict.codes[0] == "download_timeout"
+
+
+def test_credentials_never_reach_the_report(files, tmp_path: Path, capsys) -> None:
+	archive = write_zip(tmp_path / "ok.zip", {"a.txt": b"bonjour"})
+	url = files.add("ok.zip", archive.read_bytes()).replace("http://", "http://moi:secret@")
+	assert main(["scan", url, "--json"]) == EXIT_OK
+	output = capsys.readouterr().out
+	assert "secret" not in output
+	assert "***@" in json.loads(output)["archive"]
+	assert set(files.authorizations) == {"Basic bW9pOnNlY3JldA=="}  # moi:secret
+
+
+def test_a_remote_seven_zip_entry_beyond_the_buffer_is_unverifiable(
+	files, tmp_path: Path, no_disk
+) -> None:
+	archive = tmp_path / "gros.7z"
+	with py7zr.SevenZipFile(archive, "w") as handle:
+		handle.writestr(os.urandom(200_000), "bruit.bin")
+	scanner = Scanner(Limits(max_buffer_bytes=50_000))
+	verdict = scanner.inspect(RemoteSource(files.add("gros.7z", archive.read_bytes())))
+	assert verdict.safe is False
+	assert "nested_cut" in verdict.codes
+
+
+def test_credentials_are_not_forwarded_on_redirect(files, tmp_path: Path) -> None:
+	archive = write_zip(tmp_path / "ok.zip", {"a.txt": b"bonjour"})
+	target = files.add("cible.zip", archive.read_bytes())
+	files.redirects["depart.zip"] = target
+	url = target.rsplit("/", 1)[0].replace("http://", "http://moi:secret@") + "/depart.zip"
+	verdict = Scanner().inspect(RemoteSource(url))
+	assert verdict.safe is True
+	assert files.authorizations[0] is not None
+	assert all(header is None for header in files.authorizations[1::2])

@@ -19,6 +19,7 @@ REASON_CODES: dict[str, str] = {
 	"nested": "Archive imbriquée dangereuse",
 	"nested_cut": "Archive imbriquée coupée pendant la lecture",
 	"download_cap": "Plafond de téléchargement atteint",
+	"download_timeout": "Délai total de lecture distante dépassé",
 	"memory": "Mémoire épuisée pendant l'analyse",
 }
 

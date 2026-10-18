@@ -15,6 +15,7 @@ from zipguard.sandbox import (
 	CgroupJail,
 	SandboxConfig,
 	_filter_program,
+	landlock_abi,
 	seccomp_supported,
 )
 from zipguard.service import WorkerFailed, build_server, scan_in_worker_report
@@ -25,11 +26,15 @@ linux_only = pytest.mark.skipif(
 )
 
 
-def _run_sandboxed(code: str, config: str = "SandboxConfig()") -> subprocess.CompletedProcess:
+def _run_sandboxed(
+	code: str,
+	config: str = "SandboxConfig()",
+	workdir: Path | None = None,
+) -> subprocess.CompletedProcess:
 	"""
 	Description: Exécute du Python dans un processus neuf, après avoir posé le bac à sable.
 	Usage: _run_sandboxed("import socket; socket.socket()").
-	Inputs: code (str) à exécuter une fois le bac à sable posé, config (str) expression SandboxConfig.
+	Inputs: code (str) à exécuter une fois le bac à sable posé, config (str) expression SandboxConfig, workdir (Path | None) seul dossier inscriptible.
 	Outputs: CompletedProcess avec la sortie standard.
 
 	Un filtre seccomp est irréversible : il ne peut être testé que dans un processus jetable.
@@ -37,7 +42,7 @@ def _run_sandboxed(code: str, config: str = "SandboxConfig()") -> subprocess.Com
 
 	prelude = (
 		"from zipguard.sandbox import SandboxConfig, apply_sandbox\n"
-		f"print('rapport', apply_sandbox({config}))\n"
+		f"print('rapport', apply_sandbox({config}, workdir={str(workdir) if workdir else None!r}))\n"
 	)
 	return subprocess.run(
 		[sys.executable, "-c", prelude + code],
@@ -55,12 +60,15 @@ def test_an_unknown_mode_is_refused() -> None:
 
 @pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
 def test_the_filter_program_is_well_formed(machine: str) -> None:
-	program = _filter_program(machine)
+	program = _filter_program(machine, 4242)
 	assert len(program) < 255
-	deny = len(program) - 1
-	for index, (code, jt, _jf, _k) in enumerate(program):
-		if code in (0x15, 0x35) and index > 1:
-			assert index + 1 + jt == deny
+	assert program[-1] == (0x06, 0, 0, 0x00050001)  # refus EPERM en dernier
+	for index, (code, jt, jf, _k) in enumerate(program):
+		if code in (0x15, 0x35, 0x45):
+			assert index + 1 + jt < len(program)
+			assert index + 1 + jf < len(program)
+		else:
+			assert (jt, jf) == (0, 0)
 
 
 @linux_only
@@ -188,3 +196,61 @@ def test_the_cli_accepts_the_sandbox_flags() -> None:
 
 	args = _build_parser().parse_args(["serve", "--sandbox", "strict", "--cgroup-root", "/x"])
 	assert (args.sandbox, args.cgroup_root) == ("strict", "/x")
+
+
+@linux_only
+def test_the_worker_cannot_signal_another_process() -> None:
+	result = _run_sandboxed(
+		"import os\nos.kill(os.getpid(), 0)\nprint('soi même permis')\n"
+		"try:\n    os.kill(os.getppid(), 0)\n    print('parent atteint')\n"
+		"except PermissionError:\n    print('parent refusé')\n"
+	)
+	assert "soi même permis" in result.stdout, result.stderr
+	assert "parent refusé" in result.stdout
+
+
+@linux_only
+def test_the_worker_cannot_fork() -> None:
+	result = _run_sandboxed(
+		"import os\ntry:\n    pid = os.fork()\n    print('fork permis')\n    os._exit(0) if pid == 0 else None\n"
+		"except PermissionError:\n    print('fork refusé')\n"
+	)
+	assert "fork refusé" in result.stdout, result.stderr
+	assert "fork permis" not in result.stdout
+
+
+landlock_only = pytest.mark.skipif(landlock_abi() < 1, reason="Landlock absent de ce noyau.")
+
+
+@landlock_only
+def test_the_worker_writes_only_in_its_own_directory(tmp_path: Path) -> None:
+	workdir = tmp_path / "travail"
+	workdir.mkdir()
+	outside = tmp_path / "dehors.txt"
+	readable = tmp_path / "lisible.txt"
+	readable.write_text("bonjour")
+	result = _run_sandboxed(
+		"import tempfile\n"
+		f"print('lu', open({str(readable)!r}).read())\n"
+		"with tempfile.NamedTemporaryFile(dir=None) as handle:\n"
+		"    handle.write(b'x'); print('temporaire dans', handle.name)\n"
+		f"try:\n    open({str(outside)!r}, 'w').write('x')\n    print('dehors écrit')\n"
+		"except PermissionError:\n    print('dehors refusé')\n",
+		workdir=workdir,
+	)
+	assert "lu bonjour" in result.stdout, result.stderr
+	assert f"temporaire dans {workdir}" in result.stdout
+	assert "dehors refusé" in result.stdout
+	assert not outside.exists()
+	assert "'landlock': True" in result.stdout
+
+
+@landlock_only
+def test_the_service_worker_runs_under_landlock(tmp_path: Path) -> None:
+	inner = write_zip(tmp_path / "interne.zip", {"a.txt": b"bonjour"})
+	archive = write_zip(tmp_path / "externe.zip", {"interne.zip": inner.read_bytes()})
+	verdict, report = scan_in_worker_report(archive, Limits(), timeout=60, sandbox=SandboxConfig())
+	assert verdict.safe is True
+	assert len(verdict.children) == 1
+	assert report["landlock"] is True
+	assert report["seccomp"] is True

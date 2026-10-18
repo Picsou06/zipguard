@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import io
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +13,7 @@ from typing import IO
 from .sources import Source
 
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_DEADLINE = 300.0
 _CHUNK = 65536
 
 # Un saut vers l'avant plus court que ceci est lu et jeté sur la réponse déjà ouverte plutôt
@@ -45,6 +48,57 @@ class DownloadCapExceeded(OSError):
 		self.downloaded = downloaded
 
 
+class DeadlineExceeded(OSError):
+	"""
+	Description: Signale que l'inspection distante a dépassé son délai total.
+	Usage: levée pendant une lecture ; le scanner la traduit en refus « download_timeout ».
+	Inputs: deadline (float) délai total en secondes.
+	Outputs: exception dérivant d'OSError, pour couper toute lecture en cours.
+
+	Le délai par requête ne suffit pas : un serveur qui envoie un octet toutes les 29
+	secondes ne dépasse jamais un délai de 30, et tiendrait l'inspection indéfiniment.
+	"""
+
+	def __init__(self, deadline: float) -> None:
+		super().__init__(f"Délai total de {deadline:g} s dépassé.")
+		self.deadline = deadline
+
+
+class _HttpOnlyRedirect(urllib.request.HTTPRedirectHandler):
+	"""
+	Description: Suit les redirections, mais seulement vers http ou https.
+	Usage: interne à RemoteSource.
+	Inputs: aucun.
+	Outputs: gestionnaire urllib.
+
+	urllib suit par défaut une redirection vers ftp : le serveur d'une archive pourrait
+	ainsi faire lire à ZipGuard autre chose que ce que l'utilisateur a demandé.
+	"""
+
+	def redirect_request(self, req, fp, code, msg, headers, newurl):
+		if urllib.parse.urlsplit(newurl).scheme.lower() not in ("http", "https"):
+			raise RemoteError(f"Redirection refusée vers {redact_url(newurl)} : http ou https attendu.")
+		return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpOnlyRedirect)
+
+
+def redact_url(url: str) -> str:
+	"""
+	Description: Retire d'une adresse l'identifiant et le mot de passe qu'elle pourrait porter.
+	Usage: redact_url("https://moi:secret@exemple.org/a.zip") -> "https://***@exemple.org/a.zip".
+	Inputs: url (str) adresse.
+	Outputs: str affichable dans un rapport, un journal ou un fichier SARIF.
+	"""
+
+	parts = urllib.parse.urlsplit(url)
+	if "@" not in parts.netloc:
+		return url
+	host = parts.netloc.rsplit("@", 1)[1]
+	return urllib.parse.urlunsplit(parts._replace(netloc=f"***@{host}"))
+
+
 def is_url(target: str) -> bool:
 	"""
 	Description: Dit si un argument désigne une archive distante.
@@ -60,7 +114,7 @@ class RemoteSource(Source):
 	"""
 	Description: Archive servie en HTTP, lue par plages sans jamais être posée sur le disque.
 	Usage: RemoteSource("https://exemple.org/a.zip", max_download_bytes=50_000_000).
-	Inputs: url (str) adresse http ou https, max_download_bytes (int) plafond de téléchargement, timeout (float) délai de chaque requête.
+	Inputs: url (str) adresse http ou https, max_download_bytes (int) plafond de téléchargement, timeout (float) délai de chaque requête, deadline (float) délai total de l'inspection.
 	Outputs: Source distante ; downloaded compte les octets réellement lus.
 
 	Le gain est maximal pour un zip : son manifeste est en fin de fichier, donc une requête
@@ -71,6 +125,11 @@ class RemoteSource(Source):
 
 	Si le serveur ne permet pas la lecture par plages, seuls les formats lisibles d'un trait
 	restent inspectables ; zip et 7z sont alors refusés avec une raison claire.
+
+	Chaque plage est demandée avec If-Range, sur l'ETag ou la date de modification annoncés
+	à la première requête : si le fichier change pendant l'inspection, le serveur répond
+	par le fichier entier au lieu de la plage, et la lecture s'arrête au lieu de juger un
+	mélange de deux archives.
 	"""
 
 	on_disk = False
@@ -81,18 +140,30 @@ class RemoteSource(Source):
 		*,
 		max_download_bytes: int = 200_000_000,
 		timeout: float = DEFAULT_TIMEOUT,
+		deadline: float = DEFAULT_DEADLINE,
 	) -> None:
 		parts = urllib.parse.urlsplit(url)
-		if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
-			raise ValueError(f"Adresse non prise en charge : {url} (http ou https attendu).")
+		if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+			raise ValueError(f"Adresse non prise en charge : {redact_url(url)} (http ou https attendu).")
 
-		self.url = url
+		# Des identifiants dans l'adresse partent en en-tête Authorization, jamais dans
+		# l'adresse elle même, et jamais vers le serveur d'une redirection.
+		self.url = urllib.parse.urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]))
+		self._authorization = None
+		if parts.username is not None:
+			pair = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
+			self._authorization = "Basic " + base64.b64encode(pair.encode()).decode("ascii")
+		self.display_url = redact_url(url)
 		self.name = PurePosixPath(urllib.parse.unquote(parts.path)).name or parts.netloc
 		self.max_download_bytes = max_download_bytes
 		self.timeout = timeout
 		self.downloaded = 0
 		self.requests = 0
 		self.cap_exceeded = False
+		self.deadline = deadline
+		self.deadline_exceeded = False
+		self._started = time.monotonic()
+		self._validator: str | None = None
 		self._size, self.seekable = self._probe()
 
 	def size(self) -> int:
@@ -111,15 +182,20 @@ class RemoteSource(Source):
 
 		from . import __version__
 
+		self._check_deadline()
 		headers = {"User-Agent": f"zipguard/{__version__}", "Accept-Encoding": "identity"}
 		if ranged:
 			headers["Range"] = f"bytes={start}-"
+			if self._validator:
+				headers["If-Range"] = self._validator
 		request = urllib.request.Request(self.url, headers=headers)
+		if self._authorization:
+			request.add_unredirected_header("Authorization", self._authorization)
 		self.requests += 1
 		try:
-			return urllib.request.urlopen(request, timeout=self.timeout)
+			return _OPENER.open(request, timeout=self.timeout)
 		except urllib.error.HTTPError as error:
-			raise RemoteError(f"Le serveur a répondu {error.code} pour {self.url}.") from error
+			raise RemoteError(f"Le serveur a répondu {error.code} pour {self.display_url}.") from error
 
 	def _probe(self) -> tuple[int, bool]:
 		"""
@@ -142,6 +218,7 @@ class RemoteSource(Source):
 				match = _CONTENT_RANGE.match(response.headers.get("Content-Range", ""))
 				if match is None or match.group(3) == "*":
 					raise RemoteError("Réponse partielle sans taille totale (Content-Range).")
+				self._validator = self._pick_validator(response)
 				return int(match.group(3)), True
 			length = response.headers.get("Content-Length")
 			if length is None or not length.isdigit():
@@ -149,6 +226,28 @@ class RemoteSource(Source):
 			return int(length), False
 		finally:
 			response.close()
+
+	@staticmethod
+	def _pick_validator(response) -> str | None:
+		"""
+		Description: Choisit ce qui permettra de reconnaître le fichier d'une requête à l'autre.
+		Usage: interne à _probe.
+		Inputs: response (réponse urllib) de la première requête.
+		Outputs: str ETag fort, ou date de modification, ou None.
+
+		Un ETag faible (W/...) n'est pas accepté par If-Range : il ne garantit pas que les
+		octets sont identiques, seulement que le contenu est équivalent.
+		"""
+
+		etag = response.headers.get("ETag")
+		if etag and not etag.startswith("W/"):
+			return etag
+		return response.headers.get("Last-Modified")
+
+	def _check_deadline(self) -> None:
+		if time.monotonic() - self._started > self.deadline:
+			self.deadline_exceeded = True
+			raise DeadlineExceeded(self.deadline)
 
 	@staticmethod
 	def _check_encoding(response) -> None:
@@ -171,6 +270,7 @@ class RemoteSource(Source):
 		if self.downloaded > self.max_download_bytes:
 			self.cap_exceeded = True
 			raise DownloadCapExceeded(self.max_download_bytes, self.downloaded)
+		self._check_deadline()
 
 
 class _HttpReader(io.RawIOBase):
@@ -227,9 +327,17 @@ class _HttpReader(io.RawIOBase):
 		RemoteSource._check_encoding(response)
 		if self._source.seekable:
 			match = _CONTENT_RANGE.match(response.headers.get("Content-Range", ""))
-			if response.status != 206 or match is None or int(match.group(1)) != self._position:
+			if (
+				response.status != 206
+				or match is None
+				or int(match.group(1)) != self._position
+				or match.group(3) != str(self._source.size())
+			):
 				response.close()
-				raise RemoteError("Le serveur n'a pas servi la plage demandée.")
+				raise RemoteError(
+					"Le serveur n'a pas servi la plage demandée : le fichier a changé pendant "
+					"l'inspection, ou le serveur ne sait plus servir de plages."
+				)
 		self._response = response
 		self._response_position = self._position
 

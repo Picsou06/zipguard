@@ -176,3 +176,45 @@ def test_ascii_report_still_names_nested_archives(tmp_path: Path) -> None:
 	text = render("externe.zip", verdict, color=False, unicode=False)
 	assert "interne.zip" in text
 	assert text.encode("cp1252")
+
+
+def test_escape_sequences_from_an_archive_never_reach_the_terminal(tmp_path) -> None:
+	import io
+	import zipfile
+
+	from zipguard import Scanner
+	from zipguard.report import render
+
+	inner = io.BytesIO()
+	with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as handle:
+		handle.writestr("a.txt", b"A" * 2_000_000)
+	archive = tmp_path / "piege.zip"
+	with zipfile.ZipFile(archive, "w") as handle:
+		handle.writestr("x\x1b[2K\x1b[1A\r   SURE\x1b[8m‮txt.exe", inner.getvalue())
+
+	output = render(str(archive), Scanner().inspect(archive), color=False)
+	assert "\x1b" not in output
+	assert "‮" not in output
+	assert "\\x1b[2K" in output
+	assert "\\u202e" in output
+
+
+def test_printable_keeps_ordinary_text() -> None:
+	from zipguard.report import printable
+
+	assert printable("données/été ✅.zip") == "données/été ✅.zip"
+	assert printable("a\nb\tc\x00") == "a\\x0ab\\x09c\\x00"
+
+
+def test_extraction_errors_are_printed_safely(tmp_path, capsys) -> None:
+	import zipfile
+
+	from zipguard.__main__ import main
+
+	archive = tmp_path / "piege.zip"
+	with zipfile.ZipFile(archive, "w") as handle:
+		handle.writestr("../\x1b]0;titre\x07evade.txt", b"x")
+	assert main(["extract", str(archive), str(tmp_path / "out"), "--no-color"]) == 1
+	output = capsys.readouterr().out
+	assert "\x1b" not in output
+	assert "\x07" not in output

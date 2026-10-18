@@ -55,11 +55,12 @@ def _worker(
 	trusted: tuple[str, ...] = (),
 	sandbox: dict | None = None,
 	cgroup: str | None = None,
+	workdir: str | None = None,
 ) -> None:
 	"""
 	Description: Analyse une archive dans un processus séparé et renvoie le verdict par le tube.
 	Usage: cible interne de multiprocessing, jamais appelée directement.
-	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire sans bac à sable, trusted (tuple[str, ...]) empreintes de confiance, sandbox (dict | None) SandboxConfig sérialisée, cgroup (str | None) cgroup à rejoindre.
+	Inputs: path (str) archive, limits (dict) seuils sérialisés, pipe (Connection) tube de retour, max_memory_bytes (int) plafond mémoire sans bac à sable, trusted (tuple[str, ...]) empreintes de confiance, sandbox (dict | None) SandboxConfig sérialisée, cgroup (str | None) cgroup à rejoindre, workdir (str | None) seul dossier inscriptible.
 	Outputs: None, le verdict et le rapport du bac à sable partent dans le tube.
 
 	Doit rester au niveau du module pour être picklable avec la méthode spawn. Le bac à
@@ -70,7 +71,7 @@ def _worker(
 
 	try:
 		if sandbox is not None:
-			report = apply_sandbox(SandboxConfig(**sandbox), cgroup)
+			report = apply_sandbox(SandboxConfig(**sandbox), cgroup, workdir)
 		else:
 			report = {"mode": "memory", "rlimits": {"memory": apply_memory_limit(max_memory_bytes)}}
 		try:
@@ -149,6 +150,8 @@ def scan_in_worker_report(
 	"""
 
 	jail, jail_error = _open_jail(sandbox)
+	isolated = sandbox is not None and sandbox.mode != "off"
+	workdir = tempfile.mkdtemp(prefix="zipguard-worker-") if isolated else None
 	context = multiprocessing.get_context("spawn")
 	parent, child = context.Pipe(duplex=False)
 	process = context.Process(
@@ -161,6 +164,7 @@ def scan_in_worker_report(
 			tuple(sorted(trusted)),
 			None if sandbox is None else sandbox.as_dict(),
 			None if jail is None else str(jail.path),
+			workdir,
 		),
 	)
 	process.start()
@@ -195,6 +199,8 @@ def scan_in_worker_report(
 			process.join(5)
 		if jail is not None:
 			jail.remove()
+		if workdir is not None:
+			shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _open_jail(sandbox: SandboxConfig | None) -> tuple[CgroupJail | None, str | None]:

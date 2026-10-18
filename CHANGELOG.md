@@ -25,6 +25,9 @@ Une relecture complète a trouvé deux défauts réels, corrigés ici, et le mod
   fichier qui prendrait la place d'un dossier déjà présent.
 - Le service pouvait répondre `503` à un client qui enchaînait ses envois, le créneau
   n'étant libéré qu'après la réponse.
+- Une archive aux nombreuses archives imbriquées était annoncée à tort comme un délai
+  dépassé (`504`) : le serveur attendait la fin du worker avant de lire son verdict, et au
+  delà de 64 Kio le worker restait bloqué sur l'écriture dans le tube.
 
 ### Ajouté
 

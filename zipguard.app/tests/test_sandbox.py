@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 import subprocess
 import sys
 import threading
@@ -155,16 +154,6 @@ def test_auto_mode_goes_on_without_a_cgroup_and_says_so(tmp_path: Path) -> None:
 	assert verdict.safe is True
 	assert report["cgroup"] is False
 	assert report["cgroup_error"]
-
-
-def test_a_large_verdict_is_not_mistaken_for_a_timeout(tmp_path: Path) -> None:
-	inner = write_zip(tmp_path / "interne.zip", {"a.txt": b"bonjour"})
-	files = {f"fille-{index:03d}-{'x' * 400}.zip": inner.read_bytes() for index in range(150)}
-	archive = write_zip(tmp_path / "beaucoup.zip", files)
-	verdict, _ = scan_in_worker_report(archive, Limits(max_nested_scans=200), timeout=60)
-	# Au delà de 64 Kio, le tampon du tube est plein et le worker attend qu'on le lise.
-	assert len(pickle.dumps(("ok", verdict.as_dict(), {}))) > 65536
-	assert len(verdict.children) == 150
 
 
 @linux_only

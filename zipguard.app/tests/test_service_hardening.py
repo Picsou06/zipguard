@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import pickle
 import socket
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import pytest
 
 from conftest import write_zip
 from zipguard import Limits, Scanner
-from zipguard.service import _worker, apply_memory_limit, build_server
+from zipguard.service import _worker, apply_memory_limit, build_server, scan_in_worker
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -173,3 +174,13 @@ def test_an_allocation_beyond_the_limit_fails_inside_the_process_only() -> None:
 		env={"PYTHONPATH": str(SRC)},
 	)
 	assert result.stdout.strip() == "refusé"
+
+
+def test_a_large_verdict_is_not_mistaken_for_a_timeout(tmp_path: Path) -> None:
+	inner = write_zip(tmp_path / "interne.zip", {"a.txt": b"bonjour"})
+	files = {f"fille-{index:03d}-{'x' * 400}.zip": inner.read_bytes() for index in range(150)}
+	archive = write_zip(tmp_path / "beaucoup.zip", files)
+	verdict = scan_in_worker(archive, Limits(max_nested_scans=200), timeout=60)
+	# Au delà de 64 Kio, le tampon du tube est plein et le worker attend qu'on le lise.
+	assert len(pickle.dumps(("ok", verdict.as_dict()))) > 65536
+	assert len(verdict.children) == 150

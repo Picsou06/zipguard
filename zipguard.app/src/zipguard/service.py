@@ -138,17 +138,24 @@ def scan_in_worker(
 	process.start()
 	child.close()
 
+	# Le tube est lu avant d'attendre la fin du worker : un verdict plus gros que le tampon
+	# du tube bloquerait sinon le worker sur son écriture, et l'analyse passerait à tort pour
+	# un délai dépassé.
 	try:
-		process.join(timeout)
-		if process.is_alive():
+		if not parent.poll(timeout):
 			process.terminate()
 			process.join(5)
 			raise ScanTimeout(f"Analyse interrompue après {timeout} s.")
 
-		if not parent.poll():
-			raise WorkerFailed(f"Le worker s'est arrêté sans rendre de verdict (code {process.exitcode}).")
+		try:
+			status, payload = parent.recv()
+		except EOFError as error:
+			process.join(5)
+			raise WorkerFailed(
+				f"Le worker s'est arrêté sans rendre de verdict (code {process.exitcode})."
+			) from error
+		process.join(5)
 
-		status, payload = parent.recv()
 		if status == "error":  # pragma: no cover - dépend d'une panne du worker
 			raise WorkerFailed(payload)
 		return _verdict_from_dict(payload)

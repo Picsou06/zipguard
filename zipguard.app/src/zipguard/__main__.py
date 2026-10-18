@@ -125,6 +125,11 @@ def _build_parser() -> argparse.ArgumentParser:
 	_add_render_flags(extract)
 	extract.add_argument("--max-extract-mb", type=int, default=None)
 	extract.add_argument("--min-free-mb", type=int, default=None)
+	extract.add_argument(
+		"--allow-links",
+		action="store_true",
+		help="Recrée les liens symboliques dont la cible reste sous leur propre dossier.",
+	)
 
 	demo = sub.add_parser("demo", help="Crée une archive de démonstration bornée.")
 	demo.add_argument("output", type=Path)
@@ -136,7 +141,22 @@ def _build_parser() -> argparse.ArgumentParser:
 	serve.add_argument("--host", default="127.0.0.1")
 	serve.add_argument("--port", type=int, default=8723)
 	serve.add_argument("--max-upload-mb", type=int, default=64)
-	serve.add_argument("--timeout", type=float, default=30.0)
+	serve.add_argument("--timeout", type=float, default=30.0, help="Délai d'une analyse, en secondes.")
+	serve.add_argument(
+		"--read-timeout",
+		type=float,
+		default=30.0,
+		help="Délai de chaque lecture réseau, contre les envois au compte goutte.",
+	)
+	serve.add_argument(
+		"--max-concurrent", type=int, default=4, help="Envois traités en même temps, au delà : 503."
+	)
+	serve.add_argument(
+		"--max-memory-mb",
+		type=int,
+		default=1000,
+		help="Plafond mémoire de chaque worker, 0 pour aucun (Linux et macOS).",
+	)
 	serve.add_argument(
 		"--no-isolate",
 		action="store_true",
@@ -193,7 +213,7 @@ def _command_extract(args: argparse.Namespace) -> int:
 	scanner = Scanner(limits)
 
 	try:
-		written = scanner.safe_extract(args.archive, args.destination)
+		written = scanner.safe_extract(args.archive, args.destination, allow_links=args.allow_links)
 	except (ExtractionRefused, QuotaExceeded) as error:
 		if args.json:
 			print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False, indent=2))
@@ -279,6 +299,9 @@ def _command_serve(args: argparse.Namespace) -> int:
 		max_upload_bytes=args.max_upload_mb * 1_000_000,
 		timeout=args.timeout,
 		isolate=not args.no_isolate,
+		read_timeout=args.read_timeout,
+		max_concurrent=args.max_concurrent,
+		max_memory_bytes=args.max_memory_mb * 1_000_000,
 	)
 	return EXIT_OK
 

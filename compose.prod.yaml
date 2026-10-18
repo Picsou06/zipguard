@@ -3,7 +3,7 @@ services:
     build:
       context: ./zipguard.app
       dockerfile: Dockerfile
-    image: zipguard:2.0.0
+    image: zipguard:2.1.0
     restart: "no"
     read_only: true
     security_opt:

@@ -154,3 +154,33 @@ def test_formats_command_lists_what_is_supported(capsys) -> None:
 	out = capsys.readouterr().out
 	assert "tar.gz" in out
 	assert "7z" in out
+
+
+def test_extract_allow_links_recreates_an_inner_symlink(tmp_path: Path, capsys) -> None:
+	import io
+	import tarfile
+
+	archive = tmp_path / "lien.tar"
+	with tarfile.open(archive, "w") as handle:
+		info = tarfile.TarInfo("a.txt")
+		info.size = 1
+		handle.addfile(info, io.BytesIO(b"a"))
+		link = tarfile.TarInfo("lien")
+		link.type = tarfile.SYMTYPE
+		link.linkname = "a.txt"
+		handle.addfile(link)
+
+	destination = tmp_path / "out"
+	assert main(["extract", str(archive), str(destination), "--json"]) == EXIT_UNSAFE
+	capsys.readouterr()
+	assert main(["extract", str(archive), str(destination), "--json", "--allow-links"]) == EXIT_OK
+	assert (destination / "lien").is_symlink()
+
+
+def test_serve_accepts_the_hardening_flags() -> None:
+	from zipguard.__main__ import _build_parser
+
+	args = _build_parser().parse_args(
+		["serve", "--read-timeout", "5", "--max-concurrent", "2", "--max-memory-mb", "256"]
+	)
+	assert (args.read_timeout, args.max_concurrent, args.max_memory_mb) == (5.0, 2, 256)

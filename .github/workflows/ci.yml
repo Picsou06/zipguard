@@ -65,7 +65,13 @@ jobs:
           pip install ".[7z]" -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -q --cov=zipguard --cov-report=term --cov-fail-under=85
+
+      - name: Coverage summary
+        if: matrix.python-version == '3.12'
+        run: |
+          echo "## Couverture des tests" >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the guard bench
         run: zipguard bench --repeat 1 --json

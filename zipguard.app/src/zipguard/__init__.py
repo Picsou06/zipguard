@@ -13,7 +13,7 @@ from .limits import Limits, Verdict, human_bytes
 from .report import render, render_json
 from .scanner import ExtractionRefused, QuotaExceeded, Scanner
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
 	"Archive",

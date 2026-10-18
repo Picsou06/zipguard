@@ -3,6 +3,42 @@
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet
 applique le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [2.1.0]
+
+Une relecture complète a trouvé deux défauts réels, corrigés ici, et le mode service a
+été durci.
+
+### Corrigé
+
+- **Une extraction ratée pouvait effacer des fichiers de l'utilisateur.** En cas de
+  dépassement de quota, le nettoyage supprimait chaque fichier visé, y compris ceux qui
+  existaient déjà dans la destination sous le même nom. L'extraction passe maintenant par
+  un dossier de préparation et n'est déplacée dans la destination qu'une fois complète :
+  un échec ne touche plus à rien, et ne laisse plus de dossiers vides derrière lui.
+- **Une archive 7z contenant un lien symbolique faisait planter le scanner** au lieu de
+  rendre un verdict. Les liens 7z sont désormais reconnus comme tels, et les erreurs
+  propres à `py7zr` sont rattrapées.
+- **Le fichier inspecté pouvait différer du fichier extrait** s'il était remplacé entre les
+  deux. L'extraction travaille maintenant sur une copie privée, inspectée puis extraite.
+- **Les entrées en double** passaient : la seconde écrasait la première en silence. Elles
+  sont refusées, tout comme un nom servant à la fois de fichier et de dossier, ou un
+  fichier qui prendrait la place d'un dossier déjà présent.
+- Le service pouvait répondre `503` à un client qui enchaînait ses envois, le créneau
+  n'étant libéré qu'après la réponse.
+
+### Ajouté
+
+- `zipguard extract --allow-links` : recrée les liens symboliques dont la cible ne fait
+  que descendre (relative, sans `..`). Les liens physiques restent refusés.
+- `zipguard serve --read-timeout` (30 s par défaut) : un envoi au compte goutte reçoit un
+  `408` au lieu de bloquer un thread indéfiniment. Un corps tronqué reçoit un `400`.
+- `zipguard serve --max-concurrent` (4 par défaut) : au delà, `503` avec `Retry-After`.
+- `zipguard serve --max-memory-mb` (1000 par défaut) : plafond `RLIMIT_AS` sur chaque
+  worker. Une analyse qui l'atteint rend un verdict DANGEREUSE ; un worker qui meurt
+  sans verdict donne un `500` au lieu d'une réponse absente.
+- Couverture des tests dans la CI (seuil de 85 %, tableau dans le résumé du job).
+- Workflow `release.yml` : publication sur PyPI par étiquette, sans jeton stocké.
+
 ## [2.0.0]
 
 Les six pistes d'évolution de la version 1 sont livrées, et deux failles de détection ont

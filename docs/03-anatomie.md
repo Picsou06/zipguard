@@ -76,14 +76,17 @@ manifeste      mesuré          mesuré         manifeste
 
 L'extraction ne fait pas confiance au verdict qui vient d'être rendu.
 
-1. L'archive est inspectée. Un verdict défavorable arrête tout.
-2. Une passe de validation préalable résout **tous** les chemins et refuse les liens, avant
-   la première écriture.
+1. L'archive est recopiée dans un dossier de travail privé, créé dans la destination.
+   C'est cette copie qui est inspectée puis extraite. Un verdict défavorable arrête tout.
+2. Une passe de validation préalable résout **tous** les chemins, refuse les liens (ou,
+   avec `--allow-links`, ceux qui remontent), les doublons et les conflits avec ce qui
+   existe déjà, avant la première écriture.
 3. L'espace libre est vérifié, et le sera encore périodiquement pendant l'écriture.
-4. Chaque entrée est écrite par blocs, chaque bloc recompté face à `max_entry_bytes` et à
-   `max_extract_bytes`.
-5. Au moindre dépassement, les fichiers déjà écrits sont effacés avant que l'erreur ne
-   remonte.
+4. Chaque entrée est écrite par blocs dans un dossier de préparation, chaque bloc recompté
+   face à `max_entry_bytes` et à `max_extract_bytes`.
+5. Seulement si tout est passé, l'arborescence préparée est déplacée dans la destination.
+6. Dans tous les cas, le dossier de travail est supprimé. Une extraction ratée ne laisse
+   donc rien derrière elle, et ne touche à aucun fichier préexistant.
 
 ## La frontière de sécurité
 

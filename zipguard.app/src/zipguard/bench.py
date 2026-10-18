@@ -14,6 +14,7 @@ from pathlib import Path
 from .limits import Limits, human_bytes
 from .report import ASCII_GLYPHS, UNICODE_GLYPHS, colour_enabled, glyphs_supported, paint
 from .scanner import Scanner
+from .trust import fingerprint
 
 SCHEMA_VERSION = 1
 CORPUS_CAP_BYTES = 1_000_000
@@ -25,7 +26,7 @@ class Case:
 	"""
 	Description: Un cas du banc d'essai : une archive, les seuils à appliquer, et le verdict attendu.
 	Usage: for case in build_corpus(directory): ...
-	Inputs: name (str), path (Path), limits (Limits), expectation (bool) verdict attendu, guard (str) garde fou visé.
+	Inputs: name (str), path (Path), limits (Limits), expectation (bool) verdict attendu, guard (str) garde fou visé, trusted (frozenset[str]) empreintes de confiance.
 	Outputs: structure immuable décrivant un cas de mesure.
 	"""
 
@@ -34,6 +35,7 @@ class Case:
 	limits: Limits
 	expectation: bool
 	guard: str
+	trusted: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,35 @@ def _overlapping_zip(path: Path, copies: int, payload: bytes) -> Path:
 	return path
 
 
+def _flag_encrypted(path: Path) -> Path:
+	"""
+	Description: Marque toutes les entrées d'un zip comme chiffrées, sans rien chiffrer.
+	Usage: _flag_encrypted(directory / "chiffree.zip").
+	Inputs: path (Path) archive zip à modifier sur place.
+	Outputs: Path de l'archive.
+
+	zipfile ne sait pas chiffrer, et ZipGuard ne juge que le drapeau : on lève le bit 0 dans
+	chaque en-tête local et dans le répertoire central, là où un vrai outil le poserait.
+	"""
+
+	blob = bytearray(path.read_bytes())
+	with zipfile.ZipFile(path) as archive:
+		offsets = [info.header_offset for info in archive.infolist()]
+	for offset in offsets:
+		flags = struct.unpack_from("<H", blob, offset + 6)[0]
+		struct.pack_into("<H", blob, offset + 6, flags | 0x1)
+
+	end = blob.rfind(b"PK\x05\x06")
+	position = struct.unpack_from("<I", blob, end + 16)[0]
+	while blob[position : position + 4] == b"PK\x01\x02":
+		flags = struct.unpack_from("<H", blob, position + 8)[0]
+		struct.pack_into("<H", blob, position + 8, flags | 0x1)
+		lengths = struct.unpack_from("<HHH", blob, position + 28)
+		position += 46 + sum(lengths)
+	path.write_bytes(bytes(blob))
+	return path
+
+
 def build_corpus(directory: Path) -> list[Case]:
 	"""
 	Description: Fabrique un corpus synthétique couvrant chaque garde fou, sans rien d'offensif.
@@ -188,6 +219,9 @@ def build_corpus(directory: Path) -> list[Case]:
 	stream = directory / "flux.txt.gz"
 	with gzip.open(stream, "wb") as handle:
 		handle.write(payload)
+
+	encrypted = _flag_encrypted(_zip(directory / "chiffree.zip", {"secret.txt": b"bonjour"}))
+	trusted = _zip(directory / "confiance.zip", {"donnees.csv": payload})
 
 	return [
 		Case(
@@ -272,6 +306,21 @@ def build_corpus(directory: Path) -> list[Case]:
 			guard="recouvrement",
 		),
 		Case(
+			name="chiffree.zip",
+			path=encrypted,
+			limits=Limits(),
+			expectation=False,
+			guard="chiffrement",
+		),
+		Case(
+			name="confiance.zip",
+			path=trusted,
+			limits=Limits(max_ratio=50.0),
+			expectation=True,
+			guard="confiance",
+			trusted=frozenset({fingerprint(trusted)}),
+		),
+		Case(
 			name="pas-une-archive.txt",
 			path=plain,
 			limits=Limits(),
@@ -294,7 +343,7 @@ def run_bench(cases: list[Case], repeat: int = 3) -> list[Result]:
 
 	results: list[Result] = []
 	for case in cases:
-		scanner = Scanner(case.limits)
+		scanner = Scanner(case.limits, trusted=case.trusted)
 		best = float("inf")
 		verdict = None
 		for _ in range(max(1, repeat)):

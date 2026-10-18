@@ -447,22 +447,32 @@ zipguard bench
 ```
   cas                       garde fou           format    verdict           temps          lu
   ---------------------------------------------------------------------------------------------
-  benigne.zip               aucun               zip       SÛRE            5.65 ms      35.0 o
-  ratio.zip                 ratio               zip       REFUSÉE         0.58 ms     3.8 MiB
-  entrees.zip               max_entries         zip       REFUSÉE         9.56 ms     500.0 o
-  imbriquee.zip             imbrication         zip       REFUSÉE         7.18 ms     3.9 KiB
-  imbriquee-profondeur.zip  max_depth           zip       REFUSÉE         0.17 ms     3.9 KiB
-  mesure.tar.gz             ratio_mesure        tar.gz    REFUSÉE         6.91 ms     3.8 MiB
-  lecture-coupee.tar.gz     plafond_de_lecture  tar.gz    REFUSÉE         3.50 ms   490.0 KiB
-  flux.txt.gz               flux_compresse      gz        REFUSÉE         5.07 ms     3.8 MiB
-  recouvrement.zip          recouvrement        zip       REFUSÉE         4.18 ms    19.1 MiB
+  benigne.zip               aucun               zip       SÛRE            0.37 ms      35.0 o
+  ratio.zip                 ratio               zip       REFUSÉE         0.15 ms     3.8 MiB
+  entrees.zip               max_entries         zip       REFUSÉE        10.26 ms     500.0 o
+  entree-unique.zip         max_entry_bytes     zip       REFUSÉE         0.13 ms     3.8 MiB
+  total.zip                 max_total_bytes     zip       REFUSÉE         0.10 ms     3.8 MiB
+  imbriquee.zip             imbrication         zip       REFUSÉE         1.32 ms     3.9 KiB
+  imbriquee-profondeur.zip  max_depth           zip       REFUSÉE         0.09 ms     3.9 KiB
+  mesure.tar.gz             ratio_mesure        tar.gz    REFUSÉE         5.41 ms     3.8 MiB
+  lecture-coupee.tar.gz     plafond_de_lecture  tar.gz    REFUSÉE         0.92 ms   490.0 KiB
+  flux.txt.gz               flux_compresse      gz        REFUSÉE         3.07 ms     3.8 MiB
+  recouvrement.zip          recouvrement        zip       REFUSÉE         0.37 ms    19.1 MiB
+  chiffree.zip              chiffrement         zip       REFUSÉE         0.06 ms       7.0 o
+  confiance.zip             confiance           zip       SÛRE            0.03 ms       0.0 o
+  pas-une-archive.txt       format              inconnu   REFUSÉE         0.05 ms       0.0 o
   ---------------------------------------------------------------------------------------------
-  12 cas, 45.2 ms au total, 0 verdict(s) inattendu(s)
+  14 cas, 22.3 ms au total, 0 verdict(s) inattendu(s)
 ```
 
 La ligne à lire est `lecture-coupee.tar.gz` : **490 Kio lus sur 3,8 Mio** avant que le
 plafond ne coupe. C'est toute la thèse du projet en un chiffre — refuser sans avoir tout
 déballé.
+
+Les deux cas de la version 2.2 se lisent ensemble : `chiffree.zip` est refusée sans qu'un
+seul octet de son contenu soit lu, et `confiance.zip`, dont le ratio ferait refuser
+n'importe quelle bombe, passe en quelques centièmes de milliseconde parce que son
+empreinte figure dans la liste de confiance.
 
 Le corpus est synthétique, borné, et reconstruit à chaque lancement : aucune archive ne
 dépasse un mégaoctet compressée, aucune ne s'imbrique au delà d'un niveau. Le banc **mesure
@@ -542,7 +552,7 @@ Les six pistes de la version 1 sont **toutes livrées** :
 | Inspection récursive bornée jusqu'à `max_depth` | ✅ arbre complet des verdicts, budget d'inspection |
 | Quota disque réel pendant l'extraction | ✅ octets recomptés + marge de disque libre, nettoyage au dépassement |
 | Mode service analysant un flux dans un worker isolé | ✅ API HTTP locale, processus jetable, délai plafonné |
-| Banc d'essai mesurant le temps avant refus | ✅ douze cas, un par garde fou, verdicts vérifiés |
+| Banc d'essai mesurant le temps avant refus | ✅ quatorze cas, un par garde fou, verdicts vérifiés |
 
 Les cinq pistes de la version 2 sont livrées à leur tour dans la 2.2 :
 

@@ -122,3 +122,13 @@ def test_read_cap_case_reports_what_it_read_before_cutting(tmp_path: Path) -> No
 	results = run_bench(build_corpus(tmp_path), repeat=1)
 	capped = next(result for result in results if result.guard == "plafond_de_lecture")
 	assert capped.read_bytes > 0
+
+
+def test_the_corpus_covers_encryption_and_trust(tmp_path) -> None:
+	from zipguard.bench import build_corpus, run_bench
+
+	results = {result.guard: result for result in run_bench(build_corpus(tmp_path), repeat=1)}
+	assert results["chiffrement"].safe is False
+	assert results["chiffrement"].ok
+	assert results["confiance"].safe is True
+	assert results["confiance"].ok

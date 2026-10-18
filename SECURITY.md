@@ -23,22 +23,27 @@ de GitHub.
   d'exception.
 - Ne jamais écrire hors du dossier de destination demandé.
 - Ne jamais écrire plus d'octets que les quotas configurés, même si le manifeste ment.
-- Effacer ce qui a été écrit quand une extraction est interrompue.
+- Ne rien laisser dans la destination quand une extraction est interrompue, et ne jamais
+  toucher aux fichiers qui s'y trouvaient déjà.
+- Ne rien écrire sur le disque pendant l'inspection d'une archive distante.
+- Refuser une archive chiffrée plutôt que de la juger sur des tailles invérifiables.
 
 ## Ce que ZipGuard ne promet pas
 
 Ces limites sont connues et documentées dans
 [docs/03-anatomie.md](docs/03-anatomie.md) :
 
-- **Les archives chiffrées** ne sont pas inspectables, et ZipGuard ne prétend pas le
-  contraire.
-- **Le format 7z** passe par un dossier temporaire pour lire une entrée, parce que `py7zr`
-  ne sait pas rendre un flux borné. Un manifeste menteur y est détecté une fois l'entrée
-  écrite, pas avant.
+- **Les archives chiffrées** ne sont pas inspectables : ZipGuard les détecte et les
+  refuse, il ne les lit pas.
+- **Le format 7z** passe par un dossier temporaire, ou un tampon mémoire, pour lire une
+  entrée, parce que `py7zr` ne sait pas rendre un flux borné. Un manifeste menteur y est
+  détecté une fois l'entrée décompressée, pas avant.
 - **Lister un `tar` compressé impose de traverser tout le flux.** Le plafond de lecture
   borne ce coût, il ne le supprime pas.
-- **Le worker du mode service est tué sur un délai**, ce qui borne le temps mais pas la
-  mémoire. Un bac à sable système (seccomp, cgroups) serait le cran au dessus.
+- **Le bac à sable du worker** (seccomp, limites de ressources, cgroup) réduit ce qu'un
+  analyseur compromis pourrait faire, il ne le rend pas impossible : le filtre seccomp est
+  une liste de refus, Linux seulement, et le cgroup exige une délégation. Une archive de
+  confiance n'est pas inspectée du tout : la liste `--trust` doit être tenue avec soin.
 
 ## Utilisation responsable
 

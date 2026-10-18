@@ -3,6 +3,39 @@
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet
 applique le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [2.2.0]
+
+Les cinq pistes d'évolution de la version 2 sont livrées. Deux défauts réels ont été
+trouvés et corrigés en chemin.
+
+### Ajouté
+
+- **Détection des archives chiffrées** : zip (chiffrement historique et AES) et 7z, y
+  compris à en-têtes chiffrés. Une archive chiffrée est refusée, ses tailles étant
+  invérifiables ; une entrée chiffrée n'est jamais extraite.
+- **Codes de refus stables** (`ratio`, `encrypted`, `nested`...) dans `Verdict.codes` et
+  dans la sortie JSON, à côté des phrases.
+- **Archives de confiance par empreinte** : `zipguard fingerprint` (format `sha256sum`)
+  et `--trust FICHIER` sur `scan`, `extract` et `serve`. La confiance lève le verdict, pas
+  les quotas d'extraction.
+- **Rapport SARIF 2.1.0** (`scan --sarif`) pour l'onglet Sécurité de GitHub : une règle
+  par code de refus, un résultat par raison, des empreintes stables.
+- **`scan` sur plusieurs cibles et sur des dossiers**, parcourus sans suivre les liens ;
+  `--json` rend alors une liste. `--exit-zero` pour publier un rapport en CI.
+- **Inspection d'une archive distante** (`scan https://...`) par plages HTTP, sans rien
+  écrire sur le disque ; archives imbriquées lues en mémoire (`--max-buffer-mb`),
+  plafond de téléchargement (`--max-download-mb`), délai réseau (`--remote-timeout`).
+- **Bac à sable du worker** (`serve --sandbox auto|strict|off`) : seccomp et
+  no_new_privs, limites de ressources (mémoire, processeur, taille de fichier,
+  descripteurs, core), cgroup v2 jetable optionnel (`--cgroup-root`). `/health` et chaque
+  réponse de `/scan` disent ce qui est en place.
+- Interface `Source` (fichier, mémoire, distante) sous les adaptateurs de format.
+
+### Corrigé
+
+- **Un zip chiffré faisait planter le scanner** (`RuntimeError` non rattrapée en lisant la
+  signature d'une entrée).
+
 ## [2.1.0]
 
 Une relecture complète a trouvé deux défauts réels, corrigés ici, et le mode service a

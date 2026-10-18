@@ -19,15 +19,20 @@ zipguard/
     ├── Dockerfile
     ├── pyproject.toml
     ├── src/zipguard/
+    │   ├── sources.py        origine des octets : fichier local ou mémoire
+    │   ├── remote.py         archive distante lue par plages HTTP, sans disque
     │   ├── formats.py        adaptateurs par format et détection par signature
-    │   ├── limits.py         seuils immuables et structure du verdict
+    │   ├── limits.py         seuils immuables, codes de refus et structure du verdict
     │   ├── scanner.py        inspection récursive et extraction comptée
+    │   ├── trust.py          empreintes SHA-256 et liste de confiance
     │   ├── report.py         rendu texte et sortie JSON
+    │   ├── sarif.py          rapport SARIF pour l'onglet Sécurité de GitHub
     │   ├── service.py        API HTTP locale et worker jetable
+    │   ├── sandbox.py        seccomp, limites de ressources et cgroup du worker
     │   ├── bench.py          corpus synthétique et mesure des garde fous
     │   ├── demo.py           générateur de démonstration borné
     │   └── __main__.py       interface en ligne de commande
-    └── tests/                couverture du comportement, 146 tests
+    └── tests/                couverture du comportement, 261 tests
 ```
 
 ## L'idée centrale : le scanner ne connaît aucun format
@@ -41,20 +46,33 @@ Conséquence directe : **ajouter un format ne touche pas aux seuils**, et un `ta
 exactement les mêmes contrôles qu'un `zip`. Le jour où quelqu'un ajoute `rar`, il écrit un
 adaptateur, pas une règle de sécurité.
 
+La même idée s'applique une couche plus bas : les adaptateurs ne connaissent pas l'origine
+des octets. Ils demandent un flux à une `Source` — `FileSource` pour un fichier local,
+`MemorySource` pour une archive imbriquée lue en mémoire, `RemoteSource` pour une archive
+servie en HTTP. C'est ce qui permet d'inspecter une archive distante sans la poser sur le
+disque, avec exactement le même code : seule la source dit si l'inspection a le droit
+d'écrire un fichier temporaire (`on_disk`) et si son flux sait se déplacer (`seekable`).
+
 ```text
             ┌─────────────┐
             │  __main__   │  arguments, codes de sortie
             └──────┬──────┘
                    │  Limits
             ┌──────▼──────┐
-            │   Scanner   │  seuils, récursion, quota
+            │   Scanner   │  seuils, récursion, quota, confiance
             └──────┬──────┘
                    │  interface Archive
    ┌───────────────┼───────────────┬─────────────┐
 ┌──▼───┐    ┌──────▼──────┐  ┌─────▼─────┐  ┌────▼────┐
 │ Zip  │    │     Tar     │  │  Stream   │  │ SevenZip│
-└──────┘    └─────────────┘  └───────────┘  └─────────┘
+└──┬───┘    └──────┬──────┘  └─────┬─────┘  └────┬────┘
 manifeste      mesuré          mesuré         manifeste
+   └───────────────┴───────┬───────┴─────────────┘
+                           │  interface Source
+          ┌────────────────┼────────────────┐
+     ┌────▼─────┐    ┌─────▼──────┐   ┌─────▼──────┐
+     │  Fichier │    │  Mémoire   │   │  Distante  │
+     └──────────┘    └────────────┘   └────────────┘
 ```
 
 ## Le flux d'une inspection
@@ -65,9 +83,12 @@ manifeste      mesuré          mesuré         manifeste
    formats sans manifeste.
 4. Les entrées sont reniflées : celles qui sont elles mêmes des archives deviennent des
    candidates, quel que soit leur nom.
-5. Chaque candidate est recopiée dans un fichier temporaire borné, puis inspectée
-   récursivement avec le même `Scanner` et le même budget.
-6. Chaque seuil dépassé ajoute une raison ; un `Verdict` est rendu, avec ses filles.
+5. Chaque candidate est recopiée dans un tampon borné — un fichier temporaire, ou la
+   mémoire quand la source n'a pas le droit d'écrire —, puis inspectée récursivement avec
+   le même `Scanner` et le même budget.
+6. Chaque seuil dépassé ajoute une raison et son code ; un `Verdict` est rendu, avec ses
+   filles. Une archive dont l'empreinte figure dans la liste de confiance s'arrête avant
+   l'étape 2, déclarée sûre.
 7. `report.render` ou `report.render_json` transforme le verdict en sortie.
 8. Le code de sortie vaut `0` si l'archive est sûre, `1` sinon, `3` si le fichier est
    introuvable ou illisible : un script peut distinguer un refus d'une panne.
@@ -102,12 +123,19 @@ défense.
 
 Un outil défensif qui cache ses angles morts n'est pas défendable. Ceux de ZipGuard :
 
-- **7z** passe par un dossier temporaire pour lire une entrée, parce que `py7zr` ne sait
-  pas rendre un flux borné. La taille annoncée est vérifiée avant, la taille réelle après :
-  un manifeste menteur est détecté une fois l'entrée écrite, pas avant.
+- **7z** passe par un dossier temporaire, ou un tampon mémoire pour une source sans disque,
+  pour lire une entrée, parce que `py7zr` ne sait pas rendre un flux borné. La taille
+  annoncée est vérifiée avant, la taille réelle après : un manifeste menteur est détecté
+  une fois l'entrée décompressée, pas avant.
 - **Lister un `tar` compressé impose de traverser tout le flux.** C'est inhérent au format,
   pas un choix : le plafond de lecture borne le coût, il ne le supprime pas.
-- **Les archives chiffrées** ne sont pas inspectables, et ZipGuard ne prétend pas le
-  contraire. Les détecter pour les refuser explicitement reste à faire.
-- **Le worker du mode service est tué sur un délai**, ce qui borne le temps mais pas la
-  mémoire. Un vrai bac à sable système (seccomp, cgroups) serait le cran au dessus.
+- **Les archives chiffrées** ne sont pas inspectables : elles sont détectées et refusées,
+  pas lues.
+- **Le filtre seccomp est une liste de refus**, pas une liste blanche. Il ferme ce qu'un
+  analyseur compromis chercherait en premier (réseau, exécution, autres processus, noyau),
+  pas tout. Il n'existe que sous Linux x86_64 et aarch64 ; ailleurs, `--sandbox strict`
+  refuse d'analyser plutôt que de faire semblant.
+- **Le cgroup suppose une délégation** du cgroup v2 à l'utilisateur du service. Sans elle,
+  les limites de ressources par processus restent le seul plafond.
+- **Une archive de confiance distante** est téléchargée en entier pour calculer son
+  empreinte, sous le même plafond de téléchargement.
